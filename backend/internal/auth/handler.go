@@ -3,11 +3,35 @@ package auth
 import (
 	"errors"
 	"net/http"
+	"unicode"
 
 	"backend/internal/middleware"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
 )
+
+func init() {
+	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
+		v.RegisterValidation("strong_password", func(fl validator.FieldLevel) bool {
+			var hasUpper, hasLower, hasDigit, hasSpecial bool
+			for _, ch := range fl.Field().String() {
+				switch {
+				case unicode.IsUpper(ch):
+					hasUpper = true
+				case unicode.IsLower(ch):
+					hasLower = true
+				case unicode.IsDigit(ch):
+					hasDigit = true
+				case unicode.IsPunct(ch) || unicode.IsSymbol(ch):
+					hasSpecial = true
+				}
+			}
+			return hasUpper && hasLower && hasDigit && hasSpecial
+		})
+	}
+}
 
 type loginRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
@@ -16,7 +40,7 @@ type loginRequest struct {
 
 type signupRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
+	Password string `json:"password" binding:"required,min=8,strong_password"`
 }
 
 type Handler struct {

@@ -1,14 +1,14 @@
 package database
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 
-	_ "github.com/go-sql-driver/mysql"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
-var DB *sql.DB
+var DB *gorm.DB
 
 type Config struct {
 	Host     string
@@ -23,13 +23,9 @@ func Init(c Config) {
 		c.User, c.Password, c.Host, c.Port, c.Name,
 	)
 
-	db, err := sql.Open("mysql", dsn)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal("database: failed to open connection:", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		log.Fatal("database: failed to ping:", err)
+		log.Fatal("database: failed to connect:", err)
 	}
 
 	if err := migrate(db); err != nil {
@@ -40,14 +36,13 @@ func Init(c Config) {
 	log.Println("database: connected to MySQL")
 }
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
+func migrate(db *gorm.DB) error {
+	return db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
 			email         VARCHAR(255)    NOT NULL UNIQUE,
 			password_hash VARCHAR(255)    NOT NULL,
 			created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
-	`)
-	return err
+	`).Error
 }

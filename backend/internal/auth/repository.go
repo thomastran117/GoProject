@@ -1,60 +1,45 @@
 package auth
 
 import (
-	"database/sql"
-	"errors"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type User struct {
-	ID           uint64
-	Email        string
-	PasswordHash string
+	ID           uint64    `gorm:"primaryKey;autoIncrement"`
+	Email        string    `gorm:"uniqueIndex;size:255;not null"`
+	PasswordHash string    `gorm:"column:password_hash;size:255;not null"`
 	CreatedAt    time.Time
 }
 
 type Repository struct {
-	db *sql.DB
+	db *gorm.DB
 }
 
-func NewRepository(db *sql.DB) *Repository {
+func NewRepository(db *gorm.DB) *Repository {
 	return &Repository{db: db}
 }
 
 func (r *Repository) FindByEmail(email string) (*User, error) {
-	u := &User{}
-	err := r.db.QueryRow(
-		"SELECT id, email, password_hash, created_at FROM users WHERE email = ?",
-		email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt)
-
-	if errors.Is(err, sql.ErrNoRows) {
+	var u User
+	result := r.db.Where("email = ?", email).First(&u)
+	if result.Error == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+	if result.Error != nil {
+		return nil, result.Error
 	}
-	return u, nil
+	return &u, nil
 }
 
 func (r *Repository) Create(email, passwordHash string) (*User, error) {
-	result, err := r.db.Exec(
-		"INSERT INTO users (email, password_hash) VALUES (?, ?)",
-		email, passwordHash,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, err
-	}
-
-	return &User{
-		ID:           uint64(id),
+	u := &User{
 		Email:        email,
 		PasswordHash: passwordHash,
-		CreatedAt:    time.Now(),
-	}, nil
+	}
+	if result := r.db.Create(u); result.Error != nil {
+		return nil, result.Error
+	}
+	return u, nil
 }
