@@ -1,48 +1,79 @@
-name: Claude PR Review (API)
+name: AI PR Review (API)
 
 on:
   pull_request_target:
     types: [labeled]
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 concurrency:
-  group: claude-pr-review-${{ github.event.pull_request.number }}
+  group: ai-pr-review-api-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   review:
     if: github.event.pull_request.draft == false && github.event.label.name == 'ai-review'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - name: Call Claude PR Review API
+      - name: Call PR Review API
+        uses: actions/github-script@v7
         env:
-          API_URL: ${{ secrets.CLAUDE_REVIEW_API_URL }}
-          API_KEY: ${{ secrets.CLAUDE_REVIEW_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          RESPONSE=$(curl -sf \
-            --max-time 120 \
-            -X POST "$API_URL/api/review" \
-            -H "Authorization: Bearer $API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"anthropic_api_key\": \"$ANTHROPIC_API_KEY\",
-              \"pr_url\": \"$PR_URL\",
-              \"post_comment\": true
-            }")
+          REVIEW_API_URL: ${{ secrets.OPENAI_REVIEW_API_URL }}
+          REVIEW_API_KEY: ${{ secrets.OPENAI_REVIEW_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          script: |
+            const apiUrl = process.env.REVIEW_API_URL;
+            const apiKey = process.env.REVIEW_API_KEY;
+            const openaiKey = process.env.OPENAI_API_KEY;
 
-          echo "Review status: $(echo "$RESPONSE" | jq -r '.status')"
-          echo "Files reviewed: $(echo "$RESPONSE" | jq -r '.metadata.files_reviewed')"
-          echo "Inline comments posted: $(echo "$RESPONSE" | jq -r '.metadata.inline_comments_posted')"
+            if (!apiUrl || !apiKey || !openaiKey) {
+              core.setFailed("Missing required secrets: OPENAI_REVIEW_API_URL, OPENAI_REVIEW_API_KEY, or OPENAI_API_KEY");
+              return;
+            }
 
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-          if [ "$STATUS" = "FAIL" ]; then
-            echo "::error::Claude marked this PR as FAIL. Please address the issues before merging."
-            exit 1
-          elif [ "$STATUS" = "OK" ]; then
-            echo "::warning::Claude marked this PR as OK — improvements recommended but not blocking."
-          else
-            echo "Claude marked this PR as PASS. ✅"
-          fi
+            const prUrl =
+              `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${context.payload.pull_request.number}`;
+
+            core.info(`Requesting review for ${prUrl}`);
+
+            const res = await fetch(`${apiUrl}/api/review`, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                openai_api_key: openaiKey,
+                pr_url: prUrl,
+                post_comment: true
+              })
+            });
+
+            if (!res.ok) {
+              const body = await res.text();
+              core.setFailed(`Review API error: ${res.status} ${body}`);
+              return;
+            }
+
+            const data = await res.json();
+            const status = data.status || "OK";
+            const meta = data.metadata || {};
+
+            core.info(`AI status: ${status}`);
+            core.info(`Files reviewed: ${meta.files_reviewed ?? "?"}`);
+            core.info(`Inline comments posted: ${meta.inline_comments_posted ?? 0}`);
+            core.info(`Duration: ${meta.duration_ms ?? "?"}ms`);
+
+            if (status === "FAIL") {
+              core.setFailed("AI reviewer marked this PR as FAIL. Merge is blocked.");
+            } else if (status === "OK") {
+              core.warning("AI reviewer marked this PR as OK (improvements recommended).");
+            } else {
+              core.info("AI reviewer marked this PR as PASS.");
+            }

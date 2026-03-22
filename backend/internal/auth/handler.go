@@ -84,7 +84,7 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 }
 
 func HandleVerify(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "test"})
 }
 
 func HandleGoogle(c *gin.Context) {
