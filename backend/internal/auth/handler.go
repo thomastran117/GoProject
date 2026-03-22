@@ -88,7 +88,7 @@ func HandleVerify(c *gin.Context) {
 }
 
 func HandleGoogle(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "not google"})
 }
 
 func HandleMicrosoft(c *gin.Context) {
