@@ -1,11 +1,11 @@
 package config
 
 import (
-	"backend/internal/auth"
-	"backend/internal/database"
-	"backend/internal/health"
-	"backend/internal/middleware"
-	"backend/internal/token"
+	"backend/internal/app/core/auth"
+	"backend/internal/app/core/health"
+	"backend/internal/app/core/token"
+	"backend/internal/config/database"
+	"backend/internal/config/middleware"
 
 	"github.com/gin-gonic/gin"
 )

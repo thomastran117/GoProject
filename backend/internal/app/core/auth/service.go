@@ -1,17 +1,12 @@
 package auth
 
 import (
-	"errors"
+	"net/http"
 
-	"backend/internal/token"
+	"backend/internal/config/middleware"
+	"backend/internal/app/core/token"
 
 	"golang.org/x/crypto/bcrypt"
-)
-
-var (
-	ErrUserNotFound    = errors.New("user not found")
-	ErrInvalidPassword = errors.New("invalid password")
-	ErrUserExists      = errors.New("user already exists")
 )
 
 type AuthResponse struct {
@@ -38,11 +33,19 @@ func (s *Service) Login(email, password string) (*AuthResponse, error) {
 		return nil, err
 	}
 	if user == nil {
-		return nil, ErrUserNotFound
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid email or password",
+		}
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return nil, ErrInvalidPassword
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_CREDENTIALS",
+			Message: "Invalid email or password",
+		}
 	}
 
 	t, err := token.Generate(user.ID, user.Email)
@@ -62,7 +65,11 @@ func (s *Service) Signup(email, password string) (*AuthResponse, error) {
 		return nil, err
 	}
 	if existing != nil {
-		return nil, ErrUserExists
+		return nil, &middleware.APIError{
+			Status:  http.StatusConflict,
+			Code:    "USER_EXISTS",
+			Message: "An account with this email already exists",
+		}
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
