@@ -22,9 +22,10 @@ import (
 )
 
 type AuthResponse struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token"`
-	User         UserData `json:"user"`
+	AccessToken  string        `json:"access_token"`
+	RefreshToken string        `json:"refresh_token"`
+	RefreshTTL   time.Duration `json:"-"`
+	User         UserData      `json:"user"`
 }
 
 type UserData struct {
@@ -84,7 +85,7 @@ func NewService(repo *Repository, googleClientID, microsoftClientID string) *Ser
 
 // --- public interface ---
 
-func (s *Service) Login(ctx context.Context, email, password string) (*AuthResponse, error) {
+func (s *Service) Login(ctx context.Context, email, password string, rememberMe bool) (*AuthResponse, error) {
 	user, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
@@ -106,7 +107,8 @@ func (s *Service) Login(ctx context.Context, email, password string) (*AuthRespo
 		}
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	ttl := refreshTTLFor(rememberMe)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -114,11 +116,19 @@ func (s *Service) Login(ctx context.Context, email, password string) (*AuthRespo
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   ttl,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
 
-func (s *Service) Signup(ctx context.Context, email, password, role string) (*AuthResponse, error) {
+func refreshTTLFor(rememberMe bool) time.Duration {
+	if rememberMe {
+		return token.RefreshTTLRememberMe
+	}
+	return token.RefreshTTLDefault
+}
+
+func (s *Service) Signup(ctx context.Context, email, password, role string, rememberMe bool) (*AuthResponse, error) {
 	existing, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
@@ -141,7 +151,8 @@ func (s *Service) Signup(ctx context.Context, email, password, role string) (*Au
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	ttl := refreshTTLFor(rememberMe)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +160,7 @@ func (s *Service) Signup(ctx context.Context, email, password, role string) (*Au
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   ttl,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -181,7 +193,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthRespon
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +201,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthRespon
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   token.RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -218,7 +231,7 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*A
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +239,7 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*A
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   token.RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -241,7 +255,7 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +263,7 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   token.RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
