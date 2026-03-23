@@ -61,5 +61,10 @@ func MountRoutes() *gin.Engine {
 	api := r.Group("/api")
 	auth.MountAuthRoutes(api, authHandler)
 
+	// Protected routes — every handler below this line receives validated JWT claims.
+	protected := api.Group("/")
+	protected.Use(middleware.Authenticate())
+	_ = protected // remove once the first protected route group is mounted
+
 	return r
 }
