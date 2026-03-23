@@ -204,7 +204,13 @@ func (h *Handler) Logout(c *gin.Context) {
 
 // setRefreshCookie writes the refresh token as an HttpOnly cookie.
 // HttpOnly prevents JS access; Secure enforces HTTPS-only transmission.
+// ttl must be the same duration used when storing the token in Redis so that
+// the cookie and the backing store expire together; a mismatch would leave
+// clients holding a cookie that references an already-expired Redis key.
 func setRefreshCookie(c *gin.Context, token string, ttl time.Duration) {
+	if ttl <= 0 {
+		panic("auth: setRefreshCookie called with non-positive TTL")
+	}
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(refreshCookieName, token, int(ttl.Seconds()), "/", "", true, true)
 }
@@ -243,6 +249,8 @@ func (h *Handler) formatAuthResponse(c *gin.Context, info middleware.ClientInfo,
 	if info.IsMobile {
 		data["refresh_token"] = resp.RefreshToken
 	} else {
+		// resp.RefreshTTL is the same duration used to store the token in Redis,
+		// keeping the cookie max-age and the Redis expiry in sync.
 		setRefreshCookie(c, resp.RefreshToken, resp.RefreshTTL)
 	}
 
