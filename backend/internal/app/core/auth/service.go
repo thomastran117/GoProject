@@ -66,7 +66,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (*AuthRespo
 	}, nil
 }
 
-func (s *Service) Signup(ctx context.Context, email, password string) (*AuthResponse, error) {
+func (s *Service) Signup(ctx context.Context, email, password, role string) (*AuthResponse, error) {
 	existing, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (s *Service) Signup(ctx context.Context, email, password string) (*AuthResp
 		return nil, err
 	}
 
-	user, err := s.repo.Create(email, string(hash))
+	user, err := s.repo.Create(email, string(hash), role)
 	if err != nil {
 		return nil, err
 	}

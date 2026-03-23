@@ -2,7 +2,6 @@ package auth
 
 import (
 	"time"
-
 	"gorm.io/gorm"
 )
 
@@ -34,10 +33,11 @@ func (r *Repository) FindByEmail(email string) (*User, error) {
 	return &u, nil
 }
 
-func (r *Repository) Create(email, passwordHash string) (*User, error) {
+func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
 	u := &User{
 		Email:        email,
 		PasswordHash: passwordHash,
+		Role: role,
 	}
 	if result := r.db.Create(u); result.Error != nil {
 		return nil, result.Error

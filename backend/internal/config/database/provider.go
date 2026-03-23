@@ -3,12 +3,20 @@ package database
 import (
 	"fmt"
 	"log"
-
+	"time"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
+
+type User struct {
+	ID           uint64    `gorm:"primaryKey;autoIncrement"`
+	Email        string    `gorm:"uniqueIndex;size:255;not null"`
+	PasswordHash string    `gorm:"column:password_hash;size:255;not null"`
+	Role         string    `gorm:";size:255;not null"`
+	CreatedAt    time.Time
+}
 
 type Config struct {
 	Host     string
@@ -28,21 +36,12 @@ func Init(c Config) {
 		log.Fatal("database: failed to connect:", err)
 	}
 
-	if err := migrate(db); err != nil {
-		log.Fatal("database: migration failed:", err)
-	}
+    err = db.AutoMigrate(&User{})
+    if err != nil {
+		log.Fatal("database: failed to migrate:", err)
+    }
 
 	DB = db
 	log.Println("database: connected to MySQL")
 }
 
-func migrate(db *gorm.DB) error {
-	return db.Exec(`
-		CREATE TABLE IF NOT EXISTS users (
-			id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-			email         VARCHAR(255)    NOT NULL UNIQUE,
-			password_hash VARCHAR(255)    NOT NULL,
-			created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)
-	`).Error
-}

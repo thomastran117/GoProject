@@ -48,7 +48,8 @@ func MountRoutes() *gin.Engine {
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
-
+	r.Use(middleware.ClientInfoMiddleware())
+	
 	health.MountHealthRoutes(r.Group("/"))
 
 	api := r.Group("/api")

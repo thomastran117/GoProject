@@ -4,12 +4,13 @@ import (
 	"net/http"
 
 	"backend/internal/app/utilities/request"
+	"backend/internal/config/middleware"
 
 	"github.com/gin-gonic/gin"
 )
 
 const refreshCookieName = "refresh_token"
-const refreshCookieTTL = 7 * 24 * 60 * 60 // 7 days in seconds
+const refreshCookieTTL = 7 * 24 * 60 * 60
 
 type loginRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
@@ -20,6 +21,7 @@ type loginRequest struct {
 type signupRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required,min=8,strong_password"`
+	Role     string `json:"role"     binding:"required"`
 	Captcha  string `json:"captcha"  binding:"required"`
 }
 
@@ -43,17 +45,33 @@ func (h *Handler) HandleLogin(c *gin.Context) {
 		return
 	}
 
+	info, ok := middleware.GetClientInfo(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client info missing"})
+		return
+	}
+
 	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	setRefreshCookie(c, resp.RefreshToken)
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
-		"access_token": resp.AccessToken,
-		"user":         resp.User,
-	}})
+	if info.IsMobile{
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+			"message": "Login successful",
+			"access_token": resp.AccessToken,
+			"refresh_token": resp.RefreshToken,
+			"user":         resp.User,
+		}})
+	} else {
+		setRefreshCookie(c, resp.RefreshToken)
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+			"message": "Login successful",
+			"access_token": resp.AccessToken,
+			"user":         resp.User,
+		}})
+	}
 }
 
 func (h *Handler) HandleSignup(c *gin.Context) {
@@ -62,7 +80,7 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password)
+	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Role)
 	if err != nil {
 		c.Error(err)
 		return
