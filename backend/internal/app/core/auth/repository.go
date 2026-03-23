@@ -33,6 +33,18 @@ func (r *Repository) FindByEmail(email string) (*User, error) {
 	return &u, nil
 }
 
+func (r *Repository) FindByID(id uint64) (*User, error) {
+	var u User
+	result := r.db.First(&u, id)
+	if result.Error == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &u, nil
+}
+
 func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
 	u := &User{
 		Email:        email,

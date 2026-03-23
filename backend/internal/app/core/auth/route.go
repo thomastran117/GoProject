@@ -9,9 +9,9 @@ func MountAuthRoutes(rg *gin.RouterGroup, h *Handler) {
 	{
 		auth.POST("/login", h.HandleLogin)
 		auth.POST("/signup", h.HandleSignup)
-		auth.POST("/verify", HandleVerify)
-		auth.POST("/google", HandleGoogle)
-		auth.POST("/microsoft", HandleMicrosoft)
-		auth.POST("/refresh", HandleRefresh)
+		auth.POST("/verify", h.HandleVerify)
+		auth.POST("/google", h.HandleGoogle)
+		auth.POST("/microsoft", h.HandleMicrosoft)
+		auth.POST("/refresh", h.HandleRefresh)
 	}
 }

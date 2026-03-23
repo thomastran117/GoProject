@@ -101,15 +101,60 @@ func (s *Service) Signup(ctx context.Context, email, password, role string) (*Au
 	}, nil
 }
 
-func (s *Service) AppleAuthenticate(t string) (*AuthResponse, error) {
+// Refresh validates the given refresh token, rotates it (revoke + issue new),
+// and returns a fresh token pair.
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error) {
+	userID, err := token.ValidateRefresh(ctx, refreshToken)
+	if err != nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_REFRESH_TOKEN",
+			Message: "Refresh token is invalid or has expired",
+		}
+	}
+
+	user, err := s.repo.FindByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "USER_NOT_FOUND",
+			Message: "User no longer exists",
+		}
+	}
+
+	if err := token.RevokeRefresh(ctx, refreshToken); err != nil {
+		return nil, err
+	}
+
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
+	}, nil
+}
+
+// Logout revokes the refresh token, invalidating the session.
+func (s *Service) Logout(ctx context.Context, refreshToken string) error {
+	return token.RevokeRefresh(ctx, refreshToken)
+}
+
+func (s *Service) AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
 	return nil, nil
 }
 
-func (s *Service) MicrosoftAuthenticate(t string) (*AuthResponse, error) {
+func (s *Service) MicrosoftAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
 	return nil, nil
 }
 
-func (s *Service) GoogleAuthenticate(t string) (*AuthResponse, error) {
+func (s *Service) GoogleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
 	return nil, nil
 }
 
