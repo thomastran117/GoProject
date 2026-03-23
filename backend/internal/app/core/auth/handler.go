@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"time"
 
 	"backend/internal/app/utilities/request"
 	"backend/internal/config/middleware"
@@ -10,19 +11,20 @@ import (
 )
 
 const refreshCookieName = "refresh_token"
-const refreshCookieTTL = 7 * 24 * 60 * 60
 
 type loginRequest struct {
-	Email    string `json:"email"    binding:"required,email"`
-	Password string `json:"password" binding:"required"`
-	Captcha  string `json:"captcha"  binding:"required"`
+	Email      string `json:"email"       binding:"required,email"`
+	Password   string `json:"password"    binding:"required"`
+	Captcha    string `json:"captcha"     binding:"required"`
+	RememberMe bool   `json:"remember_me"`
 }
 
 type signupRequest struct {
-	Email    string `json:"email"    binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8,strong_password"`
-	Role     string `json:"role"     binding:"required"`
-	Captcha  string `json:"captcha"  binding:"required"`
+	Email      string `json:"email"       binding:"required,email"`
+	Password   string `json:"password"    binding:"required,min=8,strong_password"`
+	Role       string `json:"role"        binding:"required"`
+	Captcha    string `json:"captcha"     binding:"required"`
+	RememberMe bool   `json:"remember_me"`
 }
 
 type oauthRequest struct {
@@ -55,7 +57,7 @@ func (h *Handler) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password)
+	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return
@@ -76,7 +78,7 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Role)
+	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Role, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return
@@ -202,9 +204,9 @@ func (h *Handler) Logout(c *gin.Context) {
 
 // setRefreshCookie writes the refresh token as an HttpOnly cookie.
 // HttpOnly prevents JS access; Secure enforces HTTPS-only transmission.
-func setRefreshCookie(c *gin.Context, token string) {
+func setRefreshCookie(c *gin.Context, token string, ttl time.Duration) {
 	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(refreshCookieName, token, refreshCookieTTL, "/", "", true, true)
+	c.SetCookie(refreshCookieName, token, int(ttl.Seconds()), "/", "", true, true)
 }
 
 // clearRefreshCookie expires the refresh cookie immediately.
@@ -241,7 +243,7 @@ func (h *Handler) formatAuthResponse(c *gin.Context, info middleware.ClientInfo,
 	if info.IsMobile {
 		data["refresh_token"] = resp.RefreshToken
 	} else {
-		setRefreshCookie(c, resp.RefreshToken)
+		setRefreshCookie(c, resp.RefreshToken, resp.RefreshTTL)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

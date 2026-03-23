@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	accessTTL  = 15 * time.Minute
-	refreshTTL = 7 * 24 * time.Hour
+	accessTTL           = 15 * time.Minute
+	RefreshTTLRememberMe = 7 * 24 * time.Hour
+	RefreshTTLDefault    = 24 * time.Hour
 )
 
 type AccessClaims struct {
@@ -42,13 +43,14 @@ func Init(s string, c *cache.Service) {
 
 // GeneratePair issues a signed JWT access token and an opaque UUID refresh token.
 // The refresh token is stored in Redis; it is the sole source of truth for its validity.
-func GeneratePair(ctx context.Context, userID uint64, email, role string) (*TokenPair, error) {
+// refreshTTL controls how long the refresh token is valid (use RefreshTTLRememberMe or RefreshTTLDefault).
+func GeneratePair(ctx context.Context, userID uint64, email, role string, refreshTTL time.Duration) (*TokenPair, error) {
 	accessToken, err := generateAccess(userID, email, role)
 	if err != nil {
 		return nil, err
 	}
 
-	refreshToken, err := generateRefresh(ctx, userID)
+	refreshToken, err := generateRefresh(ctx, userID, refreshTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +112,10 @@ func generateAccess(userID uint64, email, role string) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
-func generateRefresh(ctx context.Context, userID uint64) (string, error) {
+func generateRefresh(ctx context.Context, userID uint64, ttl time.Duration) (string, error) {
 	token := uuid.NewString()
 	val := strconv.FormatUint(userID, 10)
-	if err := cacheService.Set(ctx, refreshKey(token), val, refreshTTL); err != nil {
+	if err := cacheService.Set(ctx, refreshKey(token), val, ttl); err != nil {
 		return "", err
 	}
 	return token, nil
