@@ -19,12 +19,17 @@ type User struct {
 }
 
 type Config struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	Name     string
+	Host         string
+	Port         string
+	User         string
+	Password     string
+	Name         string
+	MaxOpenConns int
+	MaxIdleConns int
+	ConnMaxLife  time.Duration
+	ConnMaxIdle  time.Duration
 }
+
 
 func Init(c Config) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4",
@@ -35,6 +40,16 @@ func Init(c Config) {
 	if err != nil {
 		log.Fatal("database: failed to connect:", err)
 	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal("database: failed to get sql.DB:", err)
+	}
+
+	sqlDB.SetMaxOpenConns(c.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(c.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(c.ConnMaxLife)
+	sqlDB.SetConnMaxIdleTime(c.ConnMaxIdle)
 
     err = db.AutoMigrate(&User{})
     if err != nil {
