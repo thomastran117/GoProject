@@ -10,6 +10,8 @@ import (
 	"backend/internal/config/middleware"
 	configredis "backend/internal/config/redis"
 
+	"time"
+	
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
@@ -25,6 +27,10 @@ func MountRoutes() *gin.Engine {
 		User:     env.DBUser,
 		Password: env.DBPassword,
 		Name:     env.DBName,
+		MaxOpenConns: 25,
+		MaxIdleConns: 10,
+		ConnMaxLife:  time.Hour,
+		ConnMaxIdle:  15 * time.Minute,
 	})
 
 	configredis.Init(configredis.Config{
