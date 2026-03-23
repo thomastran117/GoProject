@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Repository struct {
@@ -77,12 +78,7 @@ func (r *Repository) FindOrCreateByGoogleID(googleID, email string) (*User, erro
 	if u, err := r.FindByEmail(email); err != nil {
 		return nil, err
 	} else if u != nil {
-		// Link the Google sub to the existing account.
-		if err := r.db.Model(u).Update("google_id", googleID).Error; err != nil {
-			return nil, err
-		}
-		u.GoogleID = &googleID
-		return u, nil
+		return r.linkGoogleID(u.ID, googleID)
 	}
 
 	u, err := r.createWithGoogleID(email, googleID)
@@ -112,11 +108,7 @@ func (r *Repository) FindOrCreateByMicrosoftID(microsoftID, email string) (*User
 	if u, err := r.FindByEmail(email); err != nil {
 		return nil, err
 	} else if u != nil {
-		if err := r.db.Model(u).Update("microsoft_id", microsoftID).Error; err != nil {
-			return nil, err
-		}
-		u.MicrosoftID = &microsoftID
-		return u, nil
+		return r.linkMicrosoftID(u.ID, microsoftID)
 	}
 
 	u, err := r.createWithMicrosoftID(email, microsoftID)
@@ -143,6 +135,52 @@ func (r *Repository) FindByMicrosoftID(microsoftID string) (*User, error) {
 	}
 	if result.Error != nil {
 		return nil, result.Error
+	}
+	return &u, nil
+}
+
+// linkGoogleID atomically sets google_id on an existing user row.
+// SELECT FOR UPDATE prevents two concurrent requests from both reading a nil
+// google_id and issuing duplicate writes.
+func (r *Repository) linkGoogleID(userID uint64, googleID string) (*User, error) {
+	var u User
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
+			return err
+		}
+		if u.GoogleID != nil {
+			return nil // already linked — idempotent
+		}
+		if err := tx.Model(&u).Update("google_id", googleID).Error; err != nil {
+			return err
+		}
+		u.GoogleID = &googleID
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// linkMicrosoftID atomically sets microsoft_id on an existing user row.
+func (r *Repository) linkMicrosoftID(userID uint64, microsoftID string) (*User, error) {
+	var u User
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
+			return err
+		}
+		if u.MicrosoftID != nil {
+			return nil // already linked — idempotent
+		}
+		if err := tx.Model(&u).Update("microsoft_id", microsoftID).Error; err != nil {
+			return err
+		}
+		u.MicrosoftID = &microsoftID
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return &u, nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"backend/internal/app/core/token"
@@ -32,14 +33,53 @@ type UserData struct {
 	Role  string `json:"role"`
 }
 
+// msJWKSCache holds Microsoft's public keys with a TTL so we don't refetch
+// on every request. Guarded by a RWMutex for safe concurrent access.
+type msJWKSCache struct {
+	mu        sync.RWMutex
+	keys      *msJWKSet
+	expiresAt time.Time
+}
+
+func (c *msJWKSCache) get() *msJWKSet {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.keys != nil && time.Now().Before(c.expiresAt) {
+		return c.keys
+	}
+	return nil
+}
+
+func (c *msJWKSCache) set(keys *msJWKSet) {
+	c.mu.Lock()
+	c.keys = keys
+	c.expiresAt = time.Now().Add(jwksCacheTTL)
+	c.mu.Unlock()
+}
+
+func (c *msJWKSCache) invalidate() {
+	c.mu.Lock()
+	c.expiresAt = time.Time{}
+	c.mu.Unlock()
+}
+
 type Service struct {
 	repo              *Repository
 	googleClientID    string
 	microsoftClientID string
+	httpClient        *http.Client
+	jwksCache         msJWKSCache
 }
 
 func NewService(repo *Repository, googleClientID, microsoftClientID string) *Service {
-	return &Service{repo: repo, googleClientID: googleClientID, microsoftClientID: microsoftClientID}
+	return &Service{
+		repo:              repo,
+		googleClientID:    googleClientID,
+		microsoftClientID: microsoftClientID,
+		// Shared across all OAuth requests. The 10-second timeout is a hard
+		// cap; per-request context deadlines still take precedence.
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 // --- public interface ---
@@ -237,6 +277,14 @@ const googleRetryMax = 3
 const googleRetryBase = 100 * time.Millisecond
 const googleRetryMaxDelay = 1 * time.Second
 
+// oauthVerifyTimeout caps the total time spent verifying a single OAuth token,
+// including all retry attempts. Applied on top of any caller-supplied deadline.
+const oauthVerifyTimeout = 15 * time.Second
+
+// jwksCacheTTL controls how long Microsoft's public keys are cached before
+// a background refresh is triggered. Key rotation forces an earlier refresh.
+const jwksCacheTTL = 1 * time.Hour
+
 type googleTokenInfo struct {
 	Sub           string `json:"sub"`
 	Aud           string `json:"aud"`
@@ -257,16 +305,25 @@ var errInvalidGoogleToken = &middleware.APIError{
 // and returns the parsed claims on success. Transient errors (network failures,
 // 429, 5xx) are retried up to googleRetryMax times with exponential backoff and
 // jitter. Permanent errors (4xx) are returned immediately.
+// A hard oauthVerifyTimeout is applied over the caller's context so the total
+// verification time (including all retries) is always bounded.
 func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*googleTokenInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, oauthVerifyTimeout)
+	defer cancel()
+
 	var (
-		body   googleTokenInfo
+		body    googleTokenInfo
 		lastErr error
 	)
 
-	for attempt := range googleRetryMax {
+	for attempt := 0; attempt < googleRetryMax; attempt++ {
 		if attempt > 0 {
-			delay := min(googleRetryBase<<uint(attempt-1), googleRetryMaxDelay)
-			// Add up to 50% jitter to avoid thundering herd.
+			delay := googleRetryBase << uint(attempt-1)
+			if delay > googleRetryMaxDelay {
+				delay = googleRetryMaxDelay
+			}
+			// Non-cryptographic jitter (math/rand/v2 is fine here) spreads
+			// retries to avoid thundering herd against the tokeninfo endpoint.
 			jitter := time.Duration(rand.Int64N(int64(delay / 2)))
 			select {
 			case <-ctx.Done():
@@ -280,7 +337,7 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 			return nil, fmt.Errorf("failed to build google tokeninfo request: %w", err)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("google token verification failed: %w", err)
 			continue // network error — transient, retry
@@ -411,7 +468,12 @@ var errInvalidMicrosoftToken = &middleware.APIError{
 // verifying the JWT signature, and checking all required claims.
 // Transient errors (network failures, 429, 5xx) are retried with exponential
 // backoff. Permanent errors are returned immediately.
+// A hard oauthVerifyTimeout is applied over the caller's context so the total
+// verification time (including JWKS fetch and all retries) is always bounded.
 func (s *Service) verifyMicrosoftIDToken(ctx context.Context, idToken string) (*msClaims, error) {
+	ctx, cancel := context.WithTimeout(ctx, oauthVerifyTimeout)
+	defer cancel()
+
 	// Parse unverified first to extract the key ID from the JWT header.
 	unverified, _, err := jwt.NewParser().ParseUnverified(idToken, &msClaims{})
 	if err != nil {
@@ -429,7 +491,16 @@ func (s *Service) verifyMicrosoftIDToken(ctx context.Context, idToken string) (*
 
 	pubKey, err := jwks.publicKeyForKid(kid)
 	if err != nil {
-		return nil, errInvalidMicrosoftToken
+		// kid missing — likely a key rotation; invalidate the cache and retry once.
+		s.jwksCache.invalidate()
+		jwks, err = s.fetchMicrosoftJWKS(ctx)
+		if err != nil {
+			return nil, err
+		}
+		pubKey, err = jwks.publicKeyForKid(kid)
+		if err != nil {
+			return nil, errInvalidMicrosoftToken
+		}
 	}
 
 	var claims msClaims
@@ -448,6 +519,12 @@ func (s *Service) verifyMicrosoftIDToken(ctx context.Context, idToken string) (*
 		return nil, errInvalidMicrosoftToken
 	}
 
+	// Microsoft tokens can carry multiple audiences (e.g. resource URIs alongside
+	// the client ID). Always require a non-empty audience, and when a client ID is
+	// configured verify it is present in the list.
+	if len(claims.Audience) == 0 {
+		return nil, errInvalidMicrosoftToken
+	}
 	if s.microsoftClientID != "" && !slices.Contains([]string(claims.Audience), s.microsoftClientID) {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,
@@ -475,16 +552,26 @@ func (s *Service) verifyMicrosoftIDToken(ctx context.Context, idToken string) (*
 	return &claims, nil
 }
 
-// fetchMicrosoftJWKS retrieves Microsoft's public key set with retry/backoff.
+// fetchMicrosoftJWKS returns Microsoft's public key set, serving from the
+// in-memory cache when valid and fetching fresh keys (with retry/backoff)
+// otherwise.
 func (s *Service) fetchMicrosoftJWKS(ctx context.Context) (*msJWKSet, error) {
+	if cached := s.jwksCache.get(); cached != nil {
+		return cached, nil
+	}
+
 	var (
 		jwks    msJWKSet
 		lastErr error
 	)
 
-	for attempt := range msRetryMax {
+	for attempt := 0; attempt < msRetryMax; attempt++ {
 		if attempt > 0 {
-			delay := min(msRetryBase<<uint(attempt-1), msRetryMaxDelay)
+			delay := msRetryBase << uint(attempt-1)
+			if delay > msRetryMaxDelay {
+				delay = msRetryMaxDelay
+			}
+			// Non-cryptographic jitter; see oauthHTTPClient comment.
 			jitter := time.Duration(rand.Int64N(int64(delay / 2)))
 			select {
 			case <-ctx.Done():
@@ -498,7 +585,7 @@ func (s *Service) fetchMicrosoftJWKS(ctx context.Context) (*msJWKSet, error) {
 			return nil, fmt.Errorf("failed to build microsoft JWKS request: %w", err)
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("microsoft JWKS fetch failed: %w", err)
 			continue
@@ -529,5 +616,6 @@ func (s *Service) fetchMicrosoftJWKS(ctx context.Context) (*msJWKSet, error) {
 		return nil, fmt.Errorf("microsoft JWKS fetch failed after %d attempts: %w", msRetryMax, lastErr)
 	}
 
+	s.jwksCache.set(&jwks)
 	return &jwks, nil
 }
