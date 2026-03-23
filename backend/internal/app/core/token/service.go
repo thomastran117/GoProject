@@ -45,19 +45,41 @@ func Init(s string, c *cache.Service) {
 // The refresh token is stored in Redis; it is the sole source of truth for its validity.
 // refreshTTL controls how long the refresh token is valid (use RefreshTTLRememberMe or RefreshTTLDefault).
 func GeneratePair(ctx context.Context, userID uint64, email, role string, refreshTTL time.Duration) (*TokenPair, error) {
-	accessToken, err := generateAccess(userID, email, role)
-	if err != nil {
-		return nil, err
+	type accessResult struct {
+		token string
+		err   error
+	}
+	type refreshResult struct {
+		token string
+		err   error
 	}
 
-	refreshToken, err := generateRefresh(ctx, userID, refreshTTL)
-	if err != nil {
-		return nil, err
+	accessCh := make(chan accessResult, 1)
+	refreshCh := make(chan refreshResult, 1)
+
+	go func() {
+		t, err := generateAccess(userID, email, role)
+		accessCh <- accessResult{t, err}
+	}()
+
+	go func() {
+		t, err := generateRefresh(ctx, userID, refreshTTL)
+		refreshCh <- refreshResult{t, err}
+	}()
+
+	aRes := <-accessCh
+	rRes := <-refreshCh
+
+	if aRes.err != nil {
+		return nil, aRes.err
+	}
+	if rRes.err != nil {
+		return nil, rRes.err
 	}
 
 	return &TokenPair{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
+		AccessToken:  aRes.token,
+		RefreshToken: rRes.token,
 	}, nil
 }
 
