@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"backend/internal/app/core/token"
@@ -23,11 +25,12 @@ type UserData struct {
 }
 
 type Service struct {
-	repo *Repository
+	repo           *Repository
+	googleClientID string
 }
 
-func NewService(repo *Repository) *Service {
-	return &Service{repo: repo}
+func NewService(repo *Repository, googleClientID string) *Service {
+	return &Service{repo: repo, googleClientID: googleClientID}
 }
 
 // --- public interface ---
@@ -154,8 +157,27 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, t string) (*AuthRes
 	return nil, nil
 }
 
-func (s *Service) GoogleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
-	return nil, nil
+func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
+	claims, err := s.verifyGoogleIDToken(idToken)
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := s.repo.FindOrCreateByEmail(claims.Email)
+	if err != nil {
+		return nil, err
+	}
+
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
+	}, nil
 }
 
 // --- private helpers ---
@@ -174,14 +196,50 @@ func (s *Service) ComparePassword(hashedPassword, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
 
-func (s *Service) VerifyGoogleToken(t string) (string, error) {
-	return "yes", nil
+type googleTokenInfo struct {
+	Aud           string `json:"aud"`
+	Email         string `json:"email"`
+	EmailVerified string `json:"email_verified"`
+	ErrorDesc     string `json:"error_description"`
 }
 
-func (s *Service) VerifyMicrosoftToken(t string) (string, error) {
-	return "yes", nil
-}
+// verifyGoogleIDToken calls Google's tokeninfo endpoint to validate the ID token
+// and returns the parsed claims on success.
+func (s *Service) verifyGoogleIDToken(idToken string) (*googleTokenInfo, error) {
+	resp, err := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken)
+	if err != nil {
+		return nil, fmt.Errorf("google token verification failed: %w", err)
+	}
+	defer resp.Body.Close()
 
-func (s *Service) VerifyAppleToken(t string) (string, error) {
-	return "yes", nil
+	var info googleTokenInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to parse google token response: %w", err)
+	}
+
+	if info.ErrorDesc != "" {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_GOOGLE_TOKEN",
+			Message: "Google token is invalid or expired",
+		}
+	}
+
+	if s.googleClientID != "" && info.Aud != s.googleClientID {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_GOOGLE_TOKEN",
+			Message: "Google token audience mismatch",
+		}
+	}
+
+	if info.EmailVerified != "true" {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "UNVERIFIED_EMAIL",
+			Message: "Google account email is not verified",
+		}
+	}
+
+	return &info, nil
 }

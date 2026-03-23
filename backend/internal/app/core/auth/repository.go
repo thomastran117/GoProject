@@ -45,6 +45,19 @@ func (r *Repository) FindByID(id uint64) (*User, error) {
 	return &u, nil
 }
 
+// FindOrCreateByEmail looks up a user by email; if not found, creates one with an
+// empty password hash (OAuth users have no password) and the default "user" role.
+func (r *Repository) FindOrCreateByEmail(email string) (*User, error) {
+	u, err := r.FindByEmail(email)
+	if err != nil {
+		return nil, err
+	}
+	if u != nil {
+		return u, nil
+	}
+	return r.Create(email, "", "user")
+}
+
 func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
 	u := &User{
 		Email:        email,
