@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"backend/internal/app/core/token"
 	"backend/internal/config/middleware"
@@ -158,7 +159,7 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, t string) (*AuthRes
 }
 
 func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
-	claims, err := s.verifyGoogleIDToken(idToken)
+	claims, err := s.verifyGoogleIDToken(ctx, idToken)
 	if err != nil {
 		return nil, err
 	}
@@ -196,21 +197,42 @@ func (s *Service) ComparePassword(hashedPassword, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 }
 
+const googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo"
+const googleIssuer1 = "accounts.google.com"
+const googleIssuer2 = "https://accounts.google.com"
+
 type googleTokenInfo struct {
 	Aud           string `json:"aud"`
 	Email         string `json:"email"`
 	EmailVerified string `json:"email_verified"`
+	Iss           string `json:"iss"`
+	Exp           string `json:"exp"`
 	ErrorDesc     string `json:"error_description"`
+}
+
+var errInvalidGoogleToken = &middleware.APIError{
+	Status:  http.StatusUnauthorized,
+	Code:    "INVALID_GOOGLE_TOKEN",
+	Message: "Google token is invalid or expired",
 }
 
 // verifyGoogleIDToken calls Google's tokeninfo endpoint to validate the ID token
 // and returns the parsed claims on success.
-func (s *Service) verifyGoogleIDToken(idToken string) (*googleTokenInfo, error) {
-	resp, err := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken)
+func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*googleTokenInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleTokenInfoURL+"?id_token="+idToken, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build google tokeninfo request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("google token verification failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errInvalidGoogleToken
+	}
 
 	var info googleTokenInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
@@ -218,11 +240,21 @@ func (s *Service) verifyGoogleIDToken(idToken string) (*googleTokenInfo, error) 
 	}
 
 	if info.ErrorDesc != "" {
-		return nil, &middleware.APIError{
-			Status:  http.StatusUnauthorized,
-			Code:    "INVALID_GOOGLE_TOKEN",
-			Message: "Google token is invalid or expired",
-		}
+		return nil, errInvalidGoogleToken
+	}
+
+	// Validate issuer explicitly rather than relying solely on Google's check.
+	if info.Iss != googleIssuer1 && info.Iss != googleIssuer2 {
+		return nil, errInvalidGoogleToken
+	}
+
+	// Validate expiry explicitly. Exp is a Unix timestamp string.
+	var exp int64
+	if _, err := fmt.Sscanf(info.Exp, "%d", &exp); err != nil || exp == 0 {
+		return nil, errInvalidGoogleToken
+	}
+	if time.Now().Unix() >= exp {
+		return nil, errInvalidGoogleToken
 	}
 
 	if s.googleClientID != "" && info.Aud != s.googleClientID {
@@ -233,6 +265,7 @@ func (s *Service) verifyGoogleIDToken(idToken string) (*googleTokenInfo, error) 
 		}
 	}
 
+	// Strict boolean check — reject anything that isn't exactly "true".
 	if info.EmailVerified != "true" {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,

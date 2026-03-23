@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"errors"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -45,17 +48,22 @@ func (r *Repository) FindByID(id uint64) (*User, error) {
 	return &u, nil
 }
 
-// FindOrCreateByEmail looks up a user by email; if not found, creates one with an
-// empty password hash (OAuth users have no password) and the default "user" role.
+// FindOrCreateByEmail atomically finds or creates an OAuth user.
+// It attempts the insert first; if a duplicate-key error occurs (concurrent
+// request already created the row), it falls back to a lookup.
 func (r *Repository) FindOrCreateByEmail(email string) (*User, error) {
-	u, err := r.FindByEmail(email)
-	if err != nil {
-		return nil, err
-	}
-	if u != nil {
+	u, err := r.Create(email, "", "user")
+	if err == nil {
 		return u, nil
 	}
-	return r.Create(email, "", "user")
+
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		// Row was inserted by a concurrent request; fetch it.
+		return r.FindByEmail(email)
+	}
+
+	return nil, err
 }
 
 func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
