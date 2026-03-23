@@ -2,15 +2,21 @@ package auth
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"backend/internal/app/core/token"
 	"backend/internal/config/middleware"
 
+	jwt "github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,12 +33,13 @@ type UserData struct {
 }
 
 type Service struct {
-	repo           *Repository
-	googleClientID string
+	repo              *Repository
+	googleClientID    string
+	microsoftClientID string
 }
 
-func NewService(repo *Repository, googleClientID string) *Service {
-	return &Service{repo: repo, googleClientID: googleClientID}
+func NewService(repo *Repository, googleClientID, microsoftClientID string) *Service {
+	return &Service{repo: repo, googleClientID: googleClientID, microsoftClientID: microsoftClientID}
 }
 
 // --- public interface ---
@@ -155,8 +162,32 @@ func (s *Service) AppleAuthenticate(ctx context.Context, t string) (*AuthRespons
 	return nil, nil
 }
 
-func (s *Service) MicrosoftAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
-	return nil, nil
+func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
+	claims, err := s.verifyMicrosoftIDToken(ctx, idToken)
+	if err != nil {
+		return nil, err
+	}
+
+	email := claims.Email
+	if email == "" {
+		email = claims.PreferredUsername
+	}
+
+	user, err := s.repo.FindOrCreateByMicrosoftID(claims.OID, email)
+	if err != nil {
+		return nil, err
+	}
+
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
+	}, nil
 }
 
 func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
@@ -165,7 +196,7 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 		return nil, err
 	}
 
-	user, err := s.repo.FindOrCreateByEmail(claims.Email)
+	user, err := s.repo.FindOrCreateByGoogleID(claims.Sub, claims.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +238,7 @@ const googleRetryBase = 100 * time.Millisecond
 const googleRetryMaxDelay = 1 * time.Second
 
 type googleTokenInfo struct {
+	Sub           string `json:"sub"`
 	Aud           string `json:"aud"`
 	Email         string `json:"email"`
 	EmailVerified string `json:"email_verified"`
@@ -281,7 +313,7 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 
 	info := &body
 
-	if info.ErrorDesc != "" {
+	if info.ErrorDesc != "" || info.Sub == "" {
 		return nil, errInvalidGoogleToken
 	}
 
@@ -317,4 +349,185 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 	}
 
 	return info, nil
+}
+
+// --- Microsoft OAuth ---
+
+const msJWKSURL = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
+const msIssuerPrefix = "https://login.microsoftonline.com/"
+const msIssuerSuffix = "/v2.0"
+const msRetryMax = 3
+const msRetryBase = 100 * time.Millisecond
+const msRetryMaxDelay = 1 * time.Second
+
+type msJWKSet struct {
+	Keys []msJWK `json:"keys"`
+}
+
+type msJWK struct {
+	Kid string   `json:"kid"`
+	X5C []string `json:"x5c"`
+}
+
+// publicKeyForKid finds the JWK matching kid and extracts its RSA public key
+// from the first X.509 certificate in the x5c chain.
+func (ks *msJWKSet) publicKeyForKid(kid string) (*rsa.PublicKey, error) {
+	for _, k := range ks.Keys {
+		if k.Kid != kid || len(k.X5C) == 0 {
+			continue
+		}
+		der, err := base64.StdEncoding.DecodeString(k.X5C[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode x5c certificate: %w", err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse x5c certificate: %w", err)
+		}
+		pub, ok := cert.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("unexpected key type in microsoft JWKS")
+		}
+		return pub, nil
+	}
+	return nil, fmt.Errorf("no microsoft JWKS key found for kid %q", kid)
+}
+
+type msClaims struct {
+	jwt.RegisteredClaims
+	OID               string `json:"oid"`
+	Email             string `json:"email"`
+	PreferredUsername string `json:"preferred_username"`
+	TenantID          string `json:"tid"`
+}
+
+var errInvalidMicrosoftToken = &middleware.APIError{
+	Status:  http.StatusUnauthorized,
+	Code:    "INVALID_MICROSOFT_TOKEN",
+	Message: "Microsoft token is invalid or expired",
+}
+
+// verifyMicrosoftIDToken validates a Microsoft ID token by fetching the JWKS,
+// verifying the JWT signature, and checking all required claims.
+// Transient errors (network failures, 429, 5xx) are retried with exponential
+// backoff. Permanent errors are returned immediately.
+func (s *Service) verifyMicrosoftIDToken(ctx context.Context, idToken string) (*msClaims, error) {
+	// Parse unverified first to extract the key ID from the JWT header.
+	unverified, _, err := jwt.NewParser().ParseUnverified(idToken, &msClaims{})
+	if err != nil {
+		return nil, errInvalidMicrosoftToken
+	}
+	kid, ok := unverified.Header["kid"].(string)
+	if !ok || kid == "" {
+		return nil, errInvalidMicrosoftToken
+	}
+
+	jwks, err := s.fetchMicrosoftJWKS(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKey, err := jwks.publicKeyForKid(kid)
+	if err != nil {
+		return nil, errInvalidMicrosoftToken
+	}
+
+	var claims msClaims
+	_, err = jwt.NewParser(
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithExpirationRequired(),
+	).ParseWithClaims(idToken, &claims, func(_ *jwt.Token) (any, error) {
+		return pubKey, nil
+	})
+	if err != nil {
+		return nil, errInvalidMicrosoftToken
+	}
+
+	// Validate issuer format: https://login.microsoftonline.com/{tenantId}/v2.0
+	if !strings.HasPrefix(claims.Issuer, msIssuerPrefix) || !strings.HasSuffix(claims.Issuer, msIssuerSuffix) {
+		return nil, errInvalidMicrosoftToken
+	}
+
+	if s.microsoftClientID != "" && !slices.Contains([]string(claims.Audience), s.microsoftClientID) {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_MICROSOFT_TOKEN",
+			Message: "Microsoft token audience mismatch",
+		}
+	}
+
+	if claims.OID == "" {
+		return nil, errInvalidMicrosoftToken
+	}
+
+	email := claims.Email
+	if email == "" {
+		email = claims.PreferredUsername
+	}
+	if email == "" {
+		return nil, &middleware.APIError{
+			Status:  http.StatusUnauthorized,
+			Code:    "INVALID_MICROSOFT_TOKEN",
+			Message: "Microsoft token contains no email address",
+		}
+	}
+
+	return &claims, nil
+}
+
+// fetchMicrosoftJWKS retrieves Microsoft's public key set with retry/backoff.
+func (s *Service) fetchMicrosoftJWKS(ctx context.Context) (*msJWKSet, error) {
+	var (
+		jwks    msJWKSet
+		lastErr error
+	)
+
+	for attempt := range msRetryMax {
+		if attempt > 0 {
+			delay := min(msRetryBase<<uint(attempt-1), msRetryMaxDelay)
+			jitter := time.Duration(rand.Int64N(int64(delay / 2)))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay + jitter):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, msJWKSURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build microsoft JWKS request: %w", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("microsoft JWKS fetch failed: %w", err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("microsoft JWKS returned %d", resp.StatusCode)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("microsoft JWKS returned unexpected status %d", resp.StatusCode)
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&jwks)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse microsoft JWKS: %w", err)
+		}
+
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("microsoft JWKS fetch failed after %d attempts: %w", msRetryMax, lastErr)
+	}
+
+	return &jwks, nil
 }
