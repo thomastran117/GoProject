@@ -1,33 +1,131 @@
 package token
 
 import (
+	"context"
+	"fmt"
+	"strconv"
 	"time"
 
+	"backend/internal/app/core/cache"
+
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
-type Claims struct {
+const (
+	accessTTL  = 15 * time.Minute
+	refreshTTL = 7 * 24 * time.Hour
+)
+
+type AccessClaims struct {
 	UserID uint64 `json:"user_id"`
 	Email  string `json:"email"`
+	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-var secret string
-
-func Init(s string) {
-	secret = s
+type TokenPair struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
-func Generate(userID uint64, email string) (string, error) {
-	claims := Claims{
+var (
+	secret       string
+	cacheService *cache.Service
+)
+
+func Init(s string, c *cache.Service) {
+	secret = s
+	cacheService = c
+}
+
+// GeneratePair issues a signed JWT access token and an opaque UUID refresh token.
+// The refresh token is stored in Redis; it is the sole source of truth for its validity.
+func GeneratePair(ctx context.Context, userID uint64, email, role string) (*TokenPair, error) {
+	accessToken, err := generateAccess(userID, email, role)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshToken, err := generateRefresh(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	}, nil
+}
+
+// ValidateAccess parses and validates an access JWT, returning its claims.
+func ValidateAccess(tokenStr string) (*AccessClaims, error) {
+	t, err := jwt.ParseWithClaims(tokenStr, &AccessClaims{}, keyFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := t.Claims.(*AccessClaims)
+	if !ok || !t.Valid {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
+	return claims, nil
+}
+
+// ValidateRefresh looks up the opaque refresh token in Redis and returns its owner's userID.
+func ValidateRefresh(ctx context.Context, token string) (uint64, error) {
+	val, err := cacheService.Get(ctx, refreshKey(token))
+	if err == redis.Nil {
+		return 0, fmt.Errorf("token: refresh token invalid or expired")
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	userID, err := strconv.ParseUint(val, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("token: malformed refresh token payload")
+	}
+	return userID, nil
+}
+
+// RevokeRefresh deletes a refresh token from Redis (single-device logout).
+func RevokeRefresh(ctx context.Context, token string) error {
+	return cacheService.Delete(ctx, refreshKey(token))
+}
+
+// --- private helpers ---
+
+func generateAccess(userID uint64, email, role string) (string, error) {
+	claims := AccessClaims{
 		UserID: userID,
 		Email:  email,
+		Role:   role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(accessTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+}
 
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return t.SignedString([]byte(secret))
+func generateRefresh(ctx context.Context, userID uint64) (string, error) {
+	token := uuid.NewString()
+	val := strconv.FormatUint(userID, 10)
+	if err := cacheService.Set(ctx, refreshKey(token), val, refreshTTL); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func keyFunc(t *jwt.Token) (any, error) {
+	if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, fmt.Errorf("token: unexpected signing method %v", t.Header["alg"])
+	}
+	return []byte(secret), nil
+}
+
+func refreshKey(token string) string {
+	return "refresh:" + token
 }

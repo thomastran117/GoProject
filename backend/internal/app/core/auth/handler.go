@@ -2,44 +2,25 @@ package auth
 
 import (
 	"net/http"
-	"unicode"
 
-	"backend/internal/config/middleware"
+	"backend/internal/app/utilities/request"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
-	"github.com/go-playground/validator/v10"
 )
 
-func init() {
-	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
-		v.RegisterValidation("strong_password", func(fl validator.FieldLevel) bool {
-			var hasUpper, hasLower, hasDigit, hasSpecial bool
-			for _, ch := range fl.Field().String() {
-				switch {
-				case unicode.IsUpper(ch):
-					hasUpper = true
-				case unicode.IsLower(ch):
-					hasLower = true
-				case unicode.IsDigit(ch):
-					hasDigit = true
-				case unicode.IsPunct(ch) || unicode.IsSymbol(ch):
-					hasSpecial = true
-				}
-			}
-			return hasUpper && hasLower && hasDigit && hasSpecial
-		})
-	}
-}
+const refreshCookieName = "refresh_token"
+const refreshCookieTTL = 7 * 24 * 60 * 60 // 7 days in seconds
 
 type loginRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	Captcha  string `json:"captcha"  binding:"required"`
 }
 
 type signupRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required,min=8,strong_password"`
+	Captcha  string `json:"captcha"  binding:"required"`
 }
 
 type oauthRequest struct {
@@ -54,46 +35,44 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func bindJSON(c *gin.Context, req any) bool {
-	if err := c.ShouldBindJSON(req); err != nil {
-		c.Error(&middleware.APIError{
-			Status:  http.StatusBadRequest,
-			Code:    "VALIDATION_ERROR",
-			Message: err.Error(),
-		})
-		return false
-	}
-	return true
-}
+// --- public interface ---
 
 func (h *Handler) HandleLogin(c *gin.Context) {
 	var req loginRequest
-	if !bindJSON(c, &req) {
+	if !request.BindJSON(c, &req) {
 		return
 	}
 
-	resp, err := h.service.Login(req.Email, req.Password)
+	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
+	setRefreshCookie(c, resp.RefreshToken)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"access_token": resp.AccessToken,
+		"user":         resp.User,
+	}})
 }
 
 func (h *Handler) HandleSignup(c *gin.Context) {
 	var req signupRequest
-	if !bindJSON(c, &req) {
+	if !request.BindJSON(c, &req) {
 		return
 	}
 
-	resp, err := h.service.Signup(req.Email, req.Password)
+	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"success": true, "data": resp})
+	setRefreshCookie(c, resp.RefreshToken)
+	c.JSON(http.StatusCreated, gin.H{"success": true, "data": gin.H{
+		"access_token": resp.AccessToken,
+		"user":         resp.User,
+	}})
 }
 
 func HandleVerify(c *gin.Context) {
@@ -102,7 +81,7 @@ func HandleVerify(c *gin.Context) {
 
 func HandleGoogle(c *gin.Context) {
 	var req oauthRequest
-	if !bindJSON(c, &req) {
+	if !request.BindJSON(c, &req) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -110,7 +89,7 @@ func HandleGoogle(c *gin.Context) {
 
 func HandleMicrosoft(c *gin.Context) {
 	var req oauthRequest
-	if !bindJSON(c, &req) {
+	if !request.BindJSON(c, &req) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -118,7 +97,7 @@ func HandleMicrosoft(c *gin.Context) {
 
 func HandleApple(c *gin.Context) {
 	var req oauthRequest
-	if !bindJSON(c, &req) {
+	if !request.BindJSON(c, &req) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -130,4 +109,13 @@ func HandleRefresh(c *gin.Context) {
 
 func Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// --- private helpers ---
+
+// setRefreshCookie writes the refresh token as an HttpOnly cookie.
+// HttpOnly prevents JS access; Secure enforces HTTPS-only transmission.
+func setRefreshCookie(c *gin.Context, token string) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(refreshCookieName, token, refreshCookieTTL, "/", "", true, true)
 }

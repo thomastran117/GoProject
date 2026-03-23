@@ -6,15 +6,16 @@ import (
 	"gorm.io/gorm"
 )
 
+type Repository struct {
+	db *gorm.DB
+}
+
 type User struct {
 	ID           uint64    `gorm:"primaryKey;autoIncrement"`
 	Email        string    `gorm:"uniqueIndex;size:255;not null"`
 	PasswordHash string    `gorm:"column:password_hash;size:255;not null"`
+	Role         string    `gorm:";size:255;not null"`
 	CreatedAt    time.Time
-}
-
-type Repository struct {
-	db *gorm.DB
 }
 
 func NewRepository(db *gorm.DB) *Repository {

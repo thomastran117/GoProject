@@ -1,22 +1,25 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 
-	"backend/internal/config/middleware"
 	"backend/internal/app/core/token"
+	"backend/internal/config/middleware"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthResponse struct {
-	Token string   `json:"token"`
-	User  UserData `json:"user"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	User         UserData `json:"user"`
 }
 
 type UserData struct {
 	ID    uint64 `json:"id"`
 	Email string `json:"email"`
+	Role  string `json:"role"`
 }
 
 type Service struct {
@@ -27,11 +30,14 @@ func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) Login(email, password string) (*AuthResponse, error) {
+// --- public interface ---
+
+func (s *Service) Login(ctx context.Context, email, password string) (*AuthResponse, error) {
 	user, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
 	}
+
 	if user == nil {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,
@@ -40,7 +46,7 @@ func (s *Service) Login(email, password string) (*AuthResponse, error) {
 		}
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+	if err := s.ComparePassword(user.PasswordHash, password); err != nil {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,
 			Code:    "INVALID_CREDENTIALS",
@@ -48,18 +54,19 @@ func (s *Service) Login(email, password string) (*AuthResponse, error) {
 		}
 	}
 
-	t, err := token.Generate(user.ID, user.Email)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
 	if err != nil {
 		return nil, err
 	}
 
 	return &AuthResponse{
-		Token: t,
-		User:  UserData{ID: user.ID, Email: user.Email},
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
 
-func (s *Service) Signup(email, password string) (*AuthResponse, error) {
+func (s *Service) Signup(ctx context.Context, email, password string) (*AuthResponse, error) {
 	existing, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
@@ -72,7 +79,7 @@ func (s *Service) Signup(email, password string) (*AuthResponse, error) {
 		}
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := s.HashPassword(password)
 	if err != nil {
 		return nil, err
 	}
@@ -82,13 +89,54 @@ func (s *Service) Signup(email, password string) (*AuthResponse, error) {
 		return nil, err
 	}
 
-	t, err := token.Generate(user.ID, user.Email)
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role)
 	if err != nil {
 		return nil, err
 	}
 
 	return &AuthResponse{
-		Token: t,
-		User:  UserData{ID: user.ID, Email: user.Email},
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
+}
+
+func (s *Service) AppleAuthenticate(t string) (*AuthResponse, error) {
+	return nil, nil
+}
+
+func (s *Service) MicrosoftAuthenticate(t string) (*AuthResponse, error) {
+	return nil, nil
+}
+
+func (s *Service) GoogleAuthenticate(t string) (*AuthResponse, error) {
+	return nil, nil
+}
+
+// --- private helpers ---
+
+// HashPassword generates a bcrypt hash from the given plaintext password.
+func (s *Service) HashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+// ComparePassword compares a plaintext password against a stored hash.
+func (s *Service) ComparePassword(hashedPassword, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+}
+
+func (s *Service) VerifyGoogleToken(t string) (string, error) {
+	return "yes", nil
+}
+
+func (s *Service) VerifyMicrosoftToken(t string) (string, error) {
+	return "yes", nil
+}
+
+func (s *Service) VerifyAppleToken(t string) (string, error) {
+	return "yes", nil
 }
