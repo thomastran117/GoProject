@@ -43,7 +43,7 @@ func MountRoutes() *gin.Engine {
 	token.Init(env.JWTSecret, cacheService)
 
 	authRepo := auth.NewRepository(database.DB)
-	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID)
+	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey)
 	authHandler := auth.NewHandler(authService)
 
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {

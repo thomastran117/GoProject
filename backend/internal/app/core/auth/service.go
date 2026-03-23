@@ -29,18 +29,20 @@ type UserData struct {
 }
 
 type Service struct {
-	repo              *Repository
-	googleClientID    string
-	microsoftClientID string
-	httpClient        *http.Client
-	jwksCache         msJWKSCache
+	repo                *Repository
+	googleClientID      string
+	microsoftClientID   string
+	turnstileSecretKey  string
+	httpClient          *http.Client
+	jwksCache           msJWKSCache
 }
 
-func NewService(repo *Repository, googleClientID, microsoftClientID string) *Service {
+func NewService(repo *Repository, googleClientID, microsoftClientID, turnstileSecretKey string) *Service {
 	return &Service{
-		repo:              repo,
-		googleClientID:    googleClientID,
-		microsoftClientID: microsoftClientID,
+		repo:               repo,
+		googleClientID:     googleClientID,
+		microsoftClientID:  microsoftClientID,
+		turnstileSecretKey: turnstileSecretKey,
 		// Shared across all OAuth requests. The 10-second timeout is a hard
 		// cap; per-request context deadlines still take precedence.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -49,7 +51,11 @@ func NewService(repo *Repository, googleClientID, microsoftClientID string) *Ser
 
 // --- public interface ---
 
-func (s *Service) Login(ctx context.Context, email, password string, rememberMe bool) (*AuthResponse, error) {
+func (s *Service) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
+	if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
+		return nil, err
+	}
+
 	user, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
@@ -85,7 +91,11 @@ func (s *Service) Login(ctx context.Context, email, password string, rememberMe 
 	}, nil
 }
 
-func (s *Service) Signup(ctx context.Context, email, password, role string, rememberMe bool) (*AuthResponse, error) {
+func (s *Service) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error) {
+	if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
+		return nil, err
+	}
+
 	existing, err := s.repo.FindByEmail(email)
 	if err != nil {
 		return nil, err
