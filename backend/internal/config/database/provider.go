@@ -15,6 +15,8 @@ type User struct {
 	Email        string    `gorm:"uniqueIndex;size:255;not null"`
 	PasswordHash string    `gorm:"column:password_hash;size:255;not null"`
 	Role         string    `gorm:";size:255;not null"`
+	GoogleID     *string   `gorm:"column:google_id;uniqueIndex;size:255"`
+	MicrosoftID  *string   `gorm:"column:microsoft_id;uniqueIndex;size:255"`
 	CreatedAt    time.Time
 }
 

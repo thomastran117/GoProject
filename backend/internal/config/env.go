@@ -17,7 +17,9 @@ type Env struct {
 	DBName     string
 
 	// Auth
-	JWTSecret string
+	JWTSecret         string
+	GoogleClientID    string
+	MicrosoftClientID string
 
 	// Redis
 	RedisAddr     string
@@ -38,7 +40,9 @@ func Load() {
 		DBUser:     getenv("DB_USER", "root"),
 		DBPassword: getenv("DB_PASSWORD", "password123"),
 		DBName:     getenv("DB_NAME", "goapp"),
-		JWTSecret:     getenv("JWT_SECRET", "changeme-set-JWT_SECRET-env-var"),
+		JWTSecret:      getenv("JWT_SECRET", "changeme-set-JWT_SECRET-env-var"),
+		GoogleClientID:    getenv("GOOGLE_CLIENT_ID", ""),
+		MicrosoftClientID: getenv("MICROSOFT_CLIENT_ID", ""),
 		RedisAddr:     getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getenv("REDIS_PASSWORD", ""),
 		RedisDB:       getenvInt("REDIS_DB", 0),
