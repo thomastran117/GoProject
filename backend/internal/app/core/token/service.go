@@ -58,11 +58,21 @@ func GeneratePair(ctx context.Context, userID uint64, email, role string, refres
 	refreshCh := make(chan refreshResult, 1)
 
 	go func() {
-		t, err := generateAccess(userID, email, role)
+		defer func() {
+			if r := recover(); r != nil {
+				accessCh <- accessResult{"", fmt.Errorf("token: panic in generateAccess: %v", r)}
+			}
+		}()
+		t, err := generateAccess(ctx, userID, email, role)
 		accessCh <- accessResult{t, err}
 	}()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				refreshCh <- refreshResult{"", fmt.Errorf("token: panic in generateRefresh: %v", r)}
+			}
+		}()
 		t, err := generateRefresh(ctx, userID, refreshTTL)
 		refreshCh <- refreshResult{t, err}
 	}()
@@ -121,7 +131,7 @@ func RevokeRefresh(ctx context.Context, token string) error {
 
 // --- private helpers ---
 
-func generateAccess(userID uint64, email, role string) (string, error) {
+func generateAccess(ctx context.Context, userID uint64, email, role string) (string, error) {
 	claims := AccessClaims{
 		UserID: userID,
 		Email:  email,
