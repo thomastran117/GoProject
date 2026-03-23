@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -201,6 +202,10 @@ const googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo"
 const googleIssuer1 = "accounts.google.com"
 const googleIssuer2 = "https://accounts.google.com"
 
+const googleRetryMax = 3
+const googleRetryBase = 100 * time.Millisecond
+const googleRetryMaxDelay = 1 * time.Second
+
 type googleTokenInfo struct {
 	Aud           string `json:"aud"`
 	Email         string `json:"email"`
@@ -217,27 +222,64 @@ var errInvalidGoogleToken = &middleware.APIError{
 }
 
 // verifyGoogleIDToken calls Google's tokeninfo endpoint to validate the ID token
-// and returns the parsed claims on success.
+// and returns the parsed claims on success. Transient errors (network failures,
+// 429, 5xx) are retried up to googleRetryMax times with exponential backoff and
+// jitter. Permanent errors (4xx) are returned immediately.
 func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*googleTokenInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleTokenInfoURL+"?id_token="+idToken, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build google tokeninfo request: %w", err)
+	var (
+		body   googleTokenInfo
+		lastErr error
+	)
+
+	for attempt := range googleRetryMax {
+		if attempt > 0 {
+			delay := min(googleRetryBase<<uint(attempt-1), googleRetryMaxDelay)
+			// Add up to 50% jitter to avoid thundering herd.
+			jitter := time.Duration(rand.Int64N(int64(delay / 2)))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay + jitter):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleTokenInfoURL+"?id_token="+idToken, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build google tokeninfo request: %w", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("google token verification failed: %w", err)
+			continue // network error — transient, retry
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("google tokeninfo returned %d", resp.StatusCode)
+			continue // transient, retry
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, errInvalidGoogleToken // 4xx — permanent, don't retry
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse google token response: %w", err)
+		}
+
+		lastErr = nil
+		break
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("google token verification failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errInvalidGoogleToken
+	if lastErr != nil {
+		return nil, fmt.Errorf("google token verification failed after %d attempts: %w", googleRetryMax, lastErr)
 	}
 
-	var info googleTokenInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("failed to parse google token response: %w", err)
-	}
+	info := &body
 
 	if info.ErrorDesc != "" {
 		return nil, errInvalidGoogleToken
@@ -274,5 +316,5 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 		}
 	}
 
-	return &info, nil
+	return info, nil
 }
