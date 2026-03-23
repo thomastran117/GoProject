@@ -57,7 +57,7 @@ func (h *Handler) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password, req.RememberMe)
+	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password, req.Captcha, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return
@@ -78,7 +78,7 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Role, req.RememberMe)
+	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Captcha, req.Role, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return
