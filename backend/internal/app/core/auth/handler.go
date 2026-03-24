@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -11,6 +12,16 @@ import (
 )
 
 const refreshCookieName = "refresh_token"
+
+type authService interface {
+	Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
+	Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
+	Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error)
+	Logout(ctx context.Context, refreshToken string) error
+	GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error)
+	MicrosoftAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error)
+	AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error)
+}
 
 type loginRequest struct {
 	Email      string `json:"email"       binding:"required,email"`
@@ -36,7 +47,7 @@ type refreshRequest struct {
 }
 
 type Handler struct {
-	service *Service
+	service authService
 }
 
 func NewHandler(service *Service) *Handler {
