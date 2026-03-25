@@ -4,14 +4,16 @@ import (
 	"backend/internal/app/core/auth"
 	"backend/internal/app/core/cache"
 	"backend/internal/app/core/health"
+	"backend/internal/app/core/profile"
 	"backend/internal/app/core/token"
 	"backend/internal/app/utilities/validators"
 	"backend/internal/config/database"
 	"backend/internal/config/middleware"
 	configredis "backend/internal/config/redis"
 
+	"log"
 	"time"
-	
+
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
@@ -42,9 +44,17 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
+	if err := database.DB.AutoMigrate(&profile.Profile{}); err != nil {
+		log.Fatal("database: failed to migrate profile:", err)
+	}
+
 	authRepo := auth.NewRepository(database.DB)
 	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey)
 	authHandler := auth.NewHandler(authService)
+
+	profileRepo := profile.NewRepository(database.DB)
+	profileService := profile.NewService(profileRepo)
+	profileHandler := profile.NewHandler(profileService)
 
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
@@ -61,10 +71,7 @@ func MountRoutes() *gin.Engine {
 	api := r.Group("/api")
 	auth.MountAuthRoutes(api, authHandler)
 
-	// Protected routes — every handler below this line receives validated JWT claims.
-	protected := api.Group("/")
-	protected.Use(middleware.Authenticate())
-	_ = protected // remove once the first protected route group is mounted
+	profile.MountProfileRoutes(api, profileHandler)
 
 	return r
 }
