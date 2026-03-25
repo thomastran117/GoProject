@@ -26,6 +26,11 @@ type Env struct {
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
+
+	// Azure Blob Storage
+	AzureStorageAccountName  string
+	AzureStorageAccountKey   string
+	AzureStorageContainerName string
 }
 
 // cfg is the package-level singleton populated by Load.
@@ -48,6 +53,9 @@ func Load() {
 		RedisAddr:     getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getenv("REDIS_PASSWORD", ""),
 		RedisDB:       getenvInt("REDIS_DB", 0),
+		AzureStorageAccountName:   getenv("AZURE_STORAGE_ACCOUNT_NAME", ""),
+		AzureStorageAccountKey:    getenv("AZURE_STORAGE_ACCOUNT_KEY", ""),
+		AzureStorageContainerName: getenv("AZURE_STORAGE_CONTAINER_NAME", "uploads"),
 	}
 }
 
