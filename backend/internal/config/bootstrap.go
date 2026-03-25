@@ -2,6 +2,7 @@ package config
 
 import (
 	"backend/internal/app/core/auth"
+	"backend/internal/app/core/blob"
 	"backend/internal/app/core/cache"
 	"backend/internal/app/core/health"
 	"backend/internal/app/core/profile"
@@ -72,6 +73,13 @@ func MountRoutes() *gin.Engine {
 	auth.MountAuthRoutes(api, authHandler)
 
 	profile.MountProfileRoutes(api, profileHandler)
+
+	blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
+	if err != nil {
+		log.Fatal("blob: failed to initialize azure storage client:", err)
+	}
+	blobHandler := blob.NewHandler(blobService)
+	blob.MountBlobRoutes(api, blobHandler)
 
 	return r
 }
