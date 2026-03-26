@@ -16,6 +16,7 @@ const refreshCookieName = "refresh_token"
 type authService interface {
 	Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
 	Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
+	SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
 	GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error)
@@ -33,9 +34,13 @@ type loginRequest struct {
 type signupRequest struct {
 	Email      string `json:"email"       binding:"required,email"`
 	Password   string `json:"password"    binding:"required,min=8,strong_password"`
-	Role       string `json:"role"        binding:"required"`
+	Role       string `json:"role"        binding:"required,valid_signup_role"`
 	Captcha    string `json:"captcha"     binding:"required"`
 	RememberMe bool   `json:"remember_me"`
+}
+
+type setRoleRequest struct {
+	Role string `json:"role" binding:"required,valid_signup_role"`
 }
 
 type oauthRequest struct {
@@ -158,6 +163,33 @@ func (h *Handler) HandleApple(c *gin.Context) {
 	}
 
 	resp, err := h.service.AppleAuthenticate(c.Request.Context(), req.Token)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	h.formatAuthResponse(c, info, resp)
+}
+
+func (h *Handler) HandleSetRole(c *gin.Context) {
+	var req setRoleRequest
+	if !request.BindJSON(c, &req) {
+		return
+	}
+
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	info, ok := middleware.GetClientInfo(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client info missing"})
+		return
+	}
+
+	resp, err := h.service.SetRole(c.Request.Context(), claims.UserID, req.Role)
 	if err != nil {
 		c.Error(err)
 		return

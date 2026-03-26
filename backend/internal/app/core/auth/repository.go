@@ -189,7 +189,7 @@ func (r *Repository) createWithMicrosoftID(email, microsoftID string) (*User, er
 	u := &User{
 		Email:        email,
 		PasswordHash: "",
-		Role:         "user",
+		Role:         "",
 		MicrosoftID:  &microsoftID,
 	}
 	if result := r.db.Create(u); result.Error != nil {
@@ -202,13 +202,20 @@ func (r *Repository) createWithGoogleID(email, googleID string) (*User, error) {
 	u := &User{
 		Email:        email,
 		PasswordHash: "",
-		Role:         "user",
+		Role:         "",
 		GoogleID:     &googleID,
 	}
 	if result := r.db.Create(u); result.Error != nil {
 		return nil, result.Error
 	}
 	return u, nil
+}
+
+func (r *Repository) UpdateRole(userID uint64, role string) (*User, error) {
+	if err := r.db.Model(&User{}).Where("id = ?", userID).Update("role", role).Error; err != nil {
+		return nil, err
+	}
+	return r.FindByID(userID)
 }
 
 func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
