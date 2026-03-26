@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -189,7 +190,7 @@ func (r *Repository) createWithMicrosoftID(email, microsoftID string) (*User, er
 	u := &User{
 		Email:        email,
 		PasswordHash: "",
-		Role:         "",
+		Role:         RolePending,
 		MicrosoftID:  &microsoftID,
 	}
 	if result := r.db.Create(u); result.Error != nil {
@@ -202,7 +203,7 @@ func (r *Repository) createWithGoogleID(email, googleID string) (*User, error) {
 	u := &User{
 		Email:        email,
 		PasswordHash: "",
-		Role:         "",
+		Role:         RolePending,
 		GoogleID:     &googleID,
 	}
 	if result := r.db.Create(u); result.Error != nil {
@@ -212,8 +213,12 @@ func (r *Repository) createWithGoogleID(email, googleID string) (*User, error) {
 }
 
 func (r *Repository) UpdateRole(userID uint64, role string) (*User, error) {
-	if err := r.db.Model(&User{}).Where("id = ?", userID).Update("role", role).Error; err != nil {
-		return nil, err
+	result := r.db.Model(&User{}).Where("id = ?", userID).Update("role", role)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("auth: UpdateRole: no rows affected for user %d", userID)
 	}
 	return r.FindByID(userID)
 }

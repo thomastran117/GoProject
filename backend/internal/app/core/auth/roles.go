@@ -1,6 +1,11 @@
 package auth
 
 const (
+	// RolePending is the zero-value assigned to OAuth-created users who have not
+	// yet completed role selection. It is intentionally the empty string so that
+	// the JWT payload signals "pending" to the frontend without extra fields.
+	RolePending = ""
+
 	RoleStudent           = "student"
 	RoleTeacher           = "teacher"
 	RolePrincipal         = "principal"

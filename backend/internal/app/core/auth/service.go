@@ -167,7 +167,7 @@ func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*Aut
 		}
 	}
 
-	if user.Role != "" {
+	if user.Role != RolePending {
 		return nil, &middleware.APIError{
 			Status:  http.StatusConflict,
 			Code:    "ROLE_ALREADY_SET",
