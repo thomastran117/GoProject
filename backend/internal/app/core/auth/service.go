@@ -96,6 +96,14 @@ func (s *Service) Login(ctx context.Context, email, password, captcha string, re
 }
 
 func (s *Service) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error) {
+	if !IsValidSignupRole(role) {
+		return nil, &middleware.APIError{
+			Status:  http.StatusBadRequest,
+			Code:    "INVALID_ROLE",
+			Message: "Role must be one of: student, teacher, principal, teaching_assistant",
+		}
+	}
+
 	if !s.skipTurnstile {
 		if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
 			return nil, err
@@ -134,6 +142,53 @@ func (s *Service) Signup(ctx context.Context, email, password, captcha, role str
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
 		RefreshTTL:   ttl,
+		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
+	}, nil
+}
+
+func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error) {
+	if !IsValidSignupRole(role) {
+		return nil, &middleware.APIError{
+			Status:  http.StatusBadRequest,
+			Code:    "INVALID_ROLE",
+			Message: "Role must be one of: student, teacher, principal, teaching_assistant",
+		}
+	}
+
+	user, err := s.repo.FindByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusNotFound,
+			Code:    "USER_NOT_FOUND",
+			Message: "User not found",
+		}
+	}
+
+	if user.Role != RolePending {
+		return nil, &middleware.APIError{
+			Status:  http.StatusConflict,
+			Code:    "ROLE_ALREADY_SET",
+			Message: "Role has already been assigned",
+		}
+	}
+
+	user, err = s.repo.UpdateRole(userID, role)
+	if err != nil {
+		return nil, err
+	}
+
+	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{
+		AccessToken:  pair.AccessToken,
+		RefreshToken: pair.RefreshToken,
+		RefreshTTL:   token.RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }

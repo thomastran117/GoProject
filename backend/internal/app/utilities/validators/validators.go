@@ -6,8 +6,17 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+var validSignupRoles = map[string]bool{
+	"student": true, "teacher": true, "principal": true, "teaching_assistant": true,
+}
+
 var registry = map[string]validator.Func{
-	"strong_password": strongPassword,
+	"strong_password":   strongPassword,
+	"valid_signup_role": validSignupRole,
+}
+
+func validSignupRole(fl validator.FieldLevel) bool {
+	return validSignupRoles[fl.Field().String()]
 }
 
 func Register(v *validator.Validate) {

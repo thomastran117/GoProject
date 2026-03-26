@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"backend/internal/app/core/token"
 	"backend/internal/app/utilities/validators"
 	"backend/internal/config/middleware"
 
@@ -27,13 +28,14 @@ func init() {
 // --- mock service ---
 
 type mockService struct {
-	loginFn    func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
-	signupFn   func(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
-	refreshFn  func(ctx context.Context, refreshToken string) (*AuthResponse, error)
-	logoutFn   func(ctx context.Context, refreshToken string) error
-	googleFn   func(ctx context.Context, idToken string) (*AuthResponse, error)
+	loginFn     func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
+	signupFn    func(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
+	setRoleFn   func(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
+	refreshFn   func(ctx context.Context, refreshToken string) (*AuthResponse, error)
+	logoutFn    func(ctx context.Context, refreshToken string) error
+	googleFn    func(ctx context.Context, idToken string) (*AuthResponse, error)
 	microsoftFn func(ctx context.Context, idToken string) (*AuthResponse, error)
-	appleFn    func(ctx context.Context, t string) (*AuthResponse, error)
+	appleFn     func(ctx context.Context, t string) (*AuthResponse, error)
 }
 
 func (m *mockService) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
@@ -41,6 +43,9 @@ func (m *mockService) Login(ctx context.Context, email, password, captcha string
 }
 func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error) {
 	return m.signupFn(ctx, email, password, captcha, role, rememberMe)
+}
+func (m *mockService) SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error) {
+	return m.setRoleFn(ctx, userID, role)
 }
 func (m *mockService) Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error) {
 	return m.refreshFn(ctx, refreshToken)
@@ -65,7 +70,7 @@ func okAuthResponse() *AuthResponse {
 		AccessToken:  "access-token",
 		RefreshToken: "refresh-token",
 		RefreshTTL:   24 * time.Hour,
-		User:         UserData{ID: 1, Email: "user@example.com", Role: "user"},
+		User:         UserData{ID: 1, Email: "user@example.com", Role: "student"},
 	}
 }
 
@@ -97,6 +102,44 @@ func newRouterNoClientInfo(svc authService) *gin.Engine {
 	r.POST("/refresh", h.HandleRefresh)
 	r.POST("/logout", h.Logout)
 	return r
+}
+
+// claimsMiddleware injects the given claims into the gin context, simulating
+// an authenticated request without needing a real JWT.
+func claimsMiddleware(claims *token.AccessClaims) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("auth_claims", claims)
+		c.Next()
+	}
+}
+
+// newSetRoleRouter builds a router for HandleSetRole tests.
+// If claims is non-nil they are injected; otherwise the handler receives no claims (→ 401).
+func newSetRoleRouter(svc authService, claims *token.AccessClaims) *gin.Engine {
+	h := &Handler{service: svc}
+	r := gin.New()
+	r.Use(middleware.ErrorHandler())
+	r.Use(middleware.ClientInfoMiddleware())
+	if claims != nil {
+		r.POST("/role", claimsMiddleware(claims), h.HandleSetRole)
+	} else {
+		r.POST("/role", h.HandleSetRole)
+	}
+	return r
+}
+
+// newSetRoleRouterNoClientInfo builds a router for HandleSetRole with claims but
+// without ClientInfoMiddleware, hitting the "client info missing" path.
+func newSetRoleRouterNoClientInfo(svc authService, claims *token.AccessClaims) *gin.Engine {
+	h := &Handler{service: svc}
+	r := gin.New()
+	r.Use(middleware.ErrorHandler())
+	r.POST("/role", claimsMiddleware(claims), h.HandleSetRole)
+	return r
+}
+
+func testClaims() *token.AccessClaims {
+	return &token.AccessClaims{UserID: 1, Email: "user@example.com", Role: ""}
 }
 
 func jsonBody(t *testing.T, v any) *bytes.Buffer {
@@ -390,6 +433,22 @@ func TestHandleSignup_InvalidJSON_Returns400(t *testing.T) {
 	}
 }
 
+func TestHandleSignup_InvalidRole_Returns400(t *testing.T) {
+	for _, role := range []string{"admin", "superuser", ""} {
+		r := newRouter(&mockService{})
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/signup", jsonBody(t, map[string]any{
+			"email": "new@example.com", "password": "Str0ng!Pass", "role": role, "captcha": "token",
+		}))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", desktopUA)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("role %q: expected 400, got %d: %s", role, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestHandleSignup_Success(t *testing.T) {
 	svc := &mockService{
 		signupFn: func(_ context.Context, _, _, _, _ string, _ bool) (*AuthResponse, error) {
@@ -399,7 +458,7 @@ func TestHandleSignup_Success(t *testing.T) {
 	r := newRouter(svc)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/signup", jsonBody(t, map[string]any{
-		"email": "new@example.com", "password": "Str0ng!Pass", "role": "user", "captcha": "token",
+		"email": "new@example.com", "password": "Str0ng!Pass", "role": "student", "captcha": "token",
 	}))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", desktopUA)
@@ -519,5 +578,110 @@ func TestLogout_Mobile_Returns200WithoutClearingCookie(t *testing.T) {
 		if c.Name == refreshCookieName {
 			t.Error("mobile logout should not set or clear refresh_token cookie")
 		}
+	}
+}
+
+// --- HandleSetRole ---
+
+func TestHandleSetRole_InvalidJSON_Returns400(t *testing.T) {
+	r := newSetRoleRouter(&mockService{}, testClaims())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/role", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleSetRole_InvalidRole_Returns400(t *testing.T) {
+	for _, role := range []string{"admin", "superuser", ""} {
+		r := newSetRoleRouter(&mockService{}, testClaims())
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/role", jsonBody(t, map[string]any{"role": role}))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", desktopUA)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("role %q: expected 400, got %d: %s", role, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandleSetRole_NoClaims_Returns401(t *testing.T) {
+	r := newSetRoleRouter(&mockService{}, nil)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/role", jsonBody(t, map[string]any{"role": "student"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestHandleSetRole_MissingClientInfo_Returns400(t *testing.T) {
+	r := newSetRoleRouterNoClientInfo(&mockService{}, testClaims())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/role", jsonBody(t, map[string]any{"role": "student"}))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleSetRole_ServiceError_ReturnsErrorStatus(t *testing.T) {
+	svc := &mockService{
+		setRoleFn: func(_ context.Context, _ uint64, _ string) (*AuthResponse, error) {
+			return nil, &middleware.APIError{Status: http.StatusConflict, Code: "ROLE_ALREADY_SET", Message: "role already set"}
+		},
+	}
+	r := newSetRoleRouter(svc, testClaims())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/role", jsonBody(t, map[string]any{"role": "teacher"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409, got %d", w.Code)
+	}
+	body := getResponseBody(t, w)
+	errBlock := body["error"].(map[string]any)
+	if errBlock["code"] != "ROLE_ALREADY_SET" {
+		t.Errorf("unexpected error code: %v", errBlock["code"])
+	}
+}
+
+func TestHandleSetRole_Success(t *testing.T) {
+	svc := &mockService{
+		setRoleFn: func(_ context.Context, _ uint64, _ string) (*AuthResponse, error) {
+			return &AuthResponse{
+				AccessToken:  "new-access-token",
+				RefreshToken: "new-refresh-token",
+				RefreshTTL:   24 * time.Hour,
+				User:         UserData{ID: 1, Email: "user@example.com", Role: "student"},
+			}, nil
+		},
+	}
+	r := newSetRoleRouter(svc, testClaims())
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/role", jsonBody(t, map[string]any{"role": "student"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["access_token"] != "new-access-token" {
+		t.Errorf("expected new access token, got %v", data["access_token"])
 	}
 }
