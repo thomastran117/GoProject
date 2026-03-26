@@ -29,20 +29,22 @@ type UserData struct {
 }
 
 type Service struct {
-	repo                *Repository
-	googleClientID      string
-	microsoftClientID   string
-	turnstileSecretKey  string
-	httpClient          *http.Client
-	jwksCache           msJWKSCache
+	repo               *Repository
+	googleClientID     string
+	microsoftClientID  string
+	turnstileSecretKey string
+	skipTurnstile      bool
+	httpClient         *http.Client
+	jwksCache          msJWKSCache
 }
 
-func NewService(repo *Repository, googleClientID, microsoftClientID, turnstileSecretKey string) *Service {
+func NewService(repo *Repository, googleClientID, microsoftClientID, turnstileSecretKey string, skipTurnstile bool) *Service {
 	return &Service{
 		repo:               repo,
 		googleClientID:     googleClientID,
 		microsoftClientID:  microsoftClientID,
 		turnstileSecretKey: turnstileSecretKey,
+		skipTurnstile:      skipTurnstile,
 		// Shared across all OAuth requests. The 10-second timeout is a hard
 		// cap; per-request context deadlines still take precedence.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -52,8 +54,10 @@ func NewService(repo *Repository, googleClientID, microsoftClientID, turnstileSe
 // --- public interface ---
 
 func (s *Service) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
-	if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
-		return nil, err
+	if !s.skipTurnstile {
+		if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
+			return nil, err
+		}
 	}
 
 	user, err := s.repo.FindByEmail(email)
@@ -92,8 +96,10 @@ func (s *Service) Login(ctx context.Context, email, password, captcha string, re
 }
 
 func (s *Service) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error) {
-	if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
-		return nil, err
+	if !s.skipTurnstile {
+		if err := VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
+			return nil, err
+		}
 	}
 
 	existing, err := s.repo.FindByEmail(email)

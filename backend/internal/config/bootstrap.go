@@ -50,7 +50,7 @@ func MountRoutes() *gin.Engine {
 	}
 
 	authRepo := auth.NewRepository(database.DB)
-	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey)
+	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile())
 	authHandler := auth.NewHandler(authService)
 
 	profileRepo := profile.NewRepository(database.DB)
@@ -74,12 +74,16 @@ func MountRoutes() *gin.Engine {
 
 	profile.MountProfileRoutes(api, profileHandler)
 
-	blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
-	if err != nil {
-		log.Fatal("blob: failed to initialize azure storage client:", err)
+	if env.HasAzureBlob() {
+		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
+		if err != nil {
+			log.Fatal("blob: failed to initialize azure storage client:", err)
+		}
+		blobHandler := blob.NewHandler(blobService)
+		blob.MountBlobRoutes(api, blobHandler)
+	} else {
+		log.Println("config: AZURE_STORAGE_ACCOUNT_NAME/KEY not configured (blob storage disabled)")
 	}
-	blobHandler := blob.NewHandler(blobService)
-	blob.MountBlobRoutes(api, blobHandler)
 
 	return r
 }
