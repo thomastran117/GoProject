@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/app/core/token"
 	"backend/internal/config/middleware"
 
 	"golang.org/x/crypto/bcrypt"
@@ -82,7 +81,7 @@ func (s *Service) Login(ctx context.Context, email, password, captcha string, re
 	}
 
 	ttl := refreshTTLFor(rememberMe)
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +132,7 @@ func (s *Service) Signup(ctx context.Context, email, password, captcha, role str
 	}
 
 	ttl := refreshTTLFor(rememberMe)
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +179,7 @@ func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*Aut
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +187,7 @@ func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*Aut
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
+		RefreshTTL:   RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -196,7 +195,7 @@ func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*Aut
 // Refresh validates the given refresh token, rotates it (revoke + issue new),
 // and returns a fresh token pair.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error) {
-	userID, err := token.ValidateRefresh(ctx, refreshToken)
+	userID, err := ValidateRefresh(ctx, refreshToken)
 	if err != nil {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,
@@ -217,11 +216,11 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthRespon
 		}
 	}
 
-	if err := token.RevokeRefresh(ctx, refreshToken); err != nil {
+	if err := RevokeRefresh(ctx, refreshToken); err != nil {
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -229,14 +228,14 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*AuthRespon
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
+		RefreshTTL:   RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
 
 // Logout revokes the refresh token, invalidating the session.
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
-	return token.RevokeRefresh(ctx, refreshToken)
+	return RevokeRefresh(ctx, refreshToken)
 }
 
 func (s *Service) AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
@@ -259,7 +258,7 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*A
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +266,7 @@ func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*A
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
+		RefreshTTL:   RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -283,7 +282,7 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	pair, err := GeneratePair(ctx, user.ID, user.Email, user.Role, RefreshTTLDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +290,7 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 	return &AuthResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
+		RefreshTTL:   RefreshTTLDefault,
 		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
 	}, nil
 }
@@ -314,7 +313,7 @@ func (s *Service) ComparePassword(hashedPassword, password string) error {
 
 func refreshTTLFor(rememberMe bool) time.Duration {
 	if rememberMe {
-		return token.RefreshTTLRememberMe
+		return RefreshTTLRememberMe
 	}
-	return token.RefreshTTLDefault
+	return RefreshTTLDefault
 }

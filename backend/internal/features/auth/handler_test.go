@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"backend/internal/app/core/token"
 	"backend/internal/app/utilities/validators"
 	"backend/internal/config/middleware"
 
@@ -106,7 +105,7 @@ func newRouterNoClientInfo(svc authService) *gin.Engine {
 
 // claimsMiddleware injects the given claims into the gin context, simulating
 // an authenticated request without needing a real JWT.
-func claimsMiddleware(claims *token.AccessClaims) gin.HandlerFunc {
+func claimsMiddleware(claims *AccessClaims) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("auth_claims", claims)
 		c.Next()
@@ -115,7 +114,7 @@ func claimsMiddleware(claims *token.AccessClaims) gin.HandlerFunc {
 
 // newSetRoleRouter builds a router for HandleSetRole tests.
 // If claims is non-nil they are injected; otherwise the handler receives no claims (→ 401).
-func newSetRoleRouter(svc authService, claims *token.AccessClaims) *gin.Engine {
+func newSetRoleRouter(svc authService, claims *AccessClaims) *gin.Engine {
 	h := &Handler{service: svc}
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())
@@ -130,7 +129,7 @@ func newSetRoleRouter(svc authService, claims *token.AccessClaims) *gin.Engine {
 
 // newSetRoleRouterNoClientInfo builds a router for HandleSetRole with claims but
 // without ClientInfoMiddleware, hitting the "client info missing" path.
-func newSetRoleRouterNoClientInfo(svc authService, claims *token.AccessClaims) *gin.Engine {
+func newSetRoleRouterNoClientInfo(svc authService, claims *AccessClaims) *gin.Engine {
 	h := &Handler{service: svc}
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())
@@ -138,8 +137,8 @@ func newSetRoleRouterNoClientInfo(svc authService, claims *token.AccessClaims) *
 	return r
 }
 
-func testClaims() *token.AccessClaims {
-	return &token.AccessClaims{UserID: 1, Email: "user@example.com", Role: ""}
+func testClaims() *AccessClaims {
+	return &AccessClaims{UserID: 1, Email: "user@example.com", Role: ""}
 }
 
 func jsonBody(t *testing.T, v any) *bytes.Buffer {
