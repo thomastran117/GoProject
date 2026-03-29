@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 )

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	"golang.org/x/crypto/bcrypt"
 )

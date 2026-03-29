@@ -10,7 +10,7 @@ import (
 
 	"context"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 func googleServer(t *testing.T, info googleTokenInfo, status int) *httptest.Server {

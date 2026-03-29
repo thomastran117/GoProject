@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"testing"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 // urlOverrideTransport redirects all HTTP requests to a fixed base URL,

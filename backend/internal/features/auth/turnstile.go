@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 const turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"

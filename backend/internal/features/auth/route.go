@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"
 )

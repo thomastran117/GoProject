@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/app/utilities/request"
-	"backend/internal/config/middleware"
+	"backend/internal/application/request"
+	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"
 )

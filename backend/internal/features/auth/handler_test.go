@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"backend/internal/app/utilities/validators"
-	"backend/internal/config/middleware"
+	"backend/internal/application/validators"
+	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"

@@ -6,7 +6,7 @@ import (
 	"strconv"
 
 	"backend/internal/app/utilities/request"
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"
 )

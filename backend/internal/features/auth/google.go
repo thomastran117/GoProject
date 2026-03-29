@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 const googleTokenInfoURL = "https://oauth2.googleapis.com/tokeninfo"
