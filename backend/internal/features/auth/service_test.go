@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"backend/internal/features/token"
 	"backend/internal/features/cache"
 
 	"github.com/alicebob/miniredis/v2"
@@ -18,7 +19,7 @@ func initTokenService(t *testing.T) {
 		t.Fatalf("miniredis: %v", err)
 	}
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	Init("test-secret", cache.NewService(client))
+	token.Init("test-secret", cache.NewService(client))
 	t.Cleanup(func() {
 		client.Close()
 		mr.Close()
@@ -71,15 +72,15 @@ func TestComparePassword_Mismatch(t *testing.T) {
 
 func TestRefreshTTLFor_RememberMe(t *testing.T) {
 	ttl := refreshTTLFor(true)
-	if ttl != RefreshTTLRememberMe {
-		t.Errorf("expected %v, got %v", RefreshTTLRememberMe, ttl)
+	if ttl != token.RefreshTTLRememberMe {
+		t.Errorf("expected %v, got %v", token.RefreshTTLRememberMe, ttl)
 	}
 }
 
 func TestRefreshTTLFor_Default(t *testing.T) {
 	ttl := refreshTTLFor(false)
-	if ttl != RefreshTTLDefault {
-		t.Errorf("expected %v, got %v", RefreshTTLDefault, ttl)
+	if ttl != token.RefreshTTLDefault {
+		t.Errorf("expected %v, got %v", token.RefreshTTLDefault, ttl)
 	}
 }
 
@@ -90,7 +91,7 @@ func TestLogout_RevokesRefreshToken(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService()
 
-	pair, err := GeneratePair(ctx, 1, "user@example.com", "user", RefreshTTLDefault)
+	pair, err := token.GeneratePair(ctx, 1, "user@example.com", "user", token.RefreshTTLDefault)
 	if err != nil {
 		t.Fatalf("GeneratePair: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestLogout_RevokesRefreshToken(t *testing.T) {
 	}
 
 	// Token should be invalid after logout.
-	_, err = ValidateRefresh(ctx, pair.RefreshToken)
+	_, err = token.ValidateRefresh(ctx, pair.RefreshToken)
 	if err == nil {
 		t.Error("expected refresh token to be invalid after logout")
 	}

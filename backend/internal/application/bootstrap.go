@@ -1,16 +1,17 @@
 package config
 
 import (
-	"backend/internal/app/core/auth"
-	"backend/internal/app/core/blob"
-	"backend/internal/app/core/cache"
-	"backend/internal/app/core/health"
-	"backend/internal/app/core/profile"
-	"backend/internal/app/core/token"
-	"backend/internal/app/utilities/validators"
+	"backend/internal/application/middleware"
+	"backend/internal/application/validators"
 	"backend/internal/config/database"
-	"backend/internal/config/middleware"
+	"backend/internal/config/environment"
 	configredis "backend/internal/config/redis"
+	"backend/internal/external/blob"
+	"backend/internal/features/auth"
+	"backend/internal/features/cache"
+	"backend/internal/features/health"
+	"backend/internal/features/profile"
+	"backend/internal/features/token"
 
 	"log"
 	"time"
@@ -21,9 +22,9 @@ import (
 )
 
 func MountRoutes() *gin.Engine {
-	Load()
+	environment.Load()
 
-	env := Cfg()
+	env := environment.Cfg()
 	database.Init(database.Config{
 		Host:     env.DBHost,
 		Port:     env.DBPort,

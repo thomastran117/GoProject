@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"backend/internal/app/core/token"
+	token "backend/internal/features/token"
 
 	"github.com/gin-gonic/gin"
 )

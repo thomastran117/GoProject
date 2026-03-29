@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"backend/internal/application/validators"
 	"backend/internal/application/middleware"
+	"backend/internal/features/token"
+	"backend/internal/application/validators"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -105,7 +106,7 @@ func newRouterNoClientInfo(svc authService) *gin.Engine {
 
 // claimsMiddleware injects the given claims into the gin context, simulating
 // an authenticated request without needing a real JWT.
-func claimsMiddleware(claims *AccessClaims) gin.HandlerFunc {
+func claimsMiddleware(claims *token.AccessClaims) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("auth_claims", claims)
 		c.Next()
@@ -114,7 +115,7 @@ func claimsMiddleware(claims *AccessClaims) gin.HandlerFunc {
 
 // newSetRoleRouter builds a router for HandleSetRole tests.
 // If claims is non-nil they are injected; otherwise the handler receives no claims (→ 401).
-func newSetRoleRouter(svc authService, claims *AccessClaims) *gin.Engine {
+func newSetRoleRouter(svc authService, claims *token.AccessClaims) *gin.Engine {
 	h := &Handler{service: svc}
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())
@@ -129,7 +130,7 @@ func newSetRoleRouter(svc authService, claims *AccessClaims) *gin.Engine {
 
 // newSetRoleRouterNoClientInfo builds a router for HandleSetRole with claims but
 // without ClientInfoMiddleware, hitting the "client info missing" path.
-func newSetRoleRouterNoClientInfo(svc authService, claims *AccessClaims) *gin.Engine {
+func newSetRoleRouterNoClientInfo(svc authService, claims *token.AccessClaims) *gin.Engine {
 	h := &Handler{service: svc}
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())
@@ -137,8 +138,8 @@ func newSetRoleRouterNoClientInfo(svc authService, claims *AccessClaims) *gin.En
 	return r
 }
 
-func testClaims() *AccessClaims {
-	return &AccessClaims{UserID: 1, Email: "user@example.com", Role: ""}
+func testClaims() *token.AccessClaims {
+	return &token.AccessClaims{UserID: 1, Email: "user@example.com", Role: ""}
 }
 
 func jsonBody(t *testing.T, v any) *bytes.Buffer {

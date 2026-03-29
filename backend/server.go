@@ -1,7 +1,7 @@
 package main
 
 import (
-	"backend/internal/config"
+	"backend/internal/application"
 )
 
 func main() {

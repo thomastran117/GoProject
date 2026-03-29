@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 // ProfileResponse is the public-facing DTO returned by every service method.

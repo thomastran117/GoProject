@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"backend/internal/app/core/cache"
-	"backend/internal/app/core/token"
+	"backend/internal/features/cache"
+	"backend/internal/features/token"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"

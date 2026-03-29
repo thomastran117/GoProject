@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"backend/internal/app/utilities/request"
+	"backend/internal/application/request"
 
 	"github.com/gin-gonic/gin"
 )

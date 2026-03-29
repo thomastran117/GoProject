@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"

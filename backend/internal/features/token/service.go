@@ -1,4 +1,4 @@
-package auth
+package token
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	accessTTL           = 15 * time.Minute
+	accessTTL            = 15 * time.Minute
 	RefreshTTLRememberMe = 7 * 24 * time.Hour
 	RefreshTTLDefault    = 24 * time.Hour
 )

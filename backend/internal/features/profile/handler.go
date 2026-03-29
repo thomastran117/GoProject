@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"backend/internal/app/utilities/request"
+	"backend/internal/application/request"
 	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"

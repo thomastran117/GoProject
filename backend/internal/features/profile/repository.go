@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 )
 
 // Profile is the database model for a user profile. Each profile is linked

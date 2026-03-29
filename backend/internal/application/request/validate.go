@@ -3,7 +3,7 @@ package request
 import (
 	"net/http"
 
-	"backend/internal/config/middleware"
+	"backend/internal/application/middleware"
 
 	"github.com/gin-gonic/gin"
 )
