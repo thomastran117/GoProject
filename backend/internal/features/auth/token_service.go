@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"backend/internal/app/core/cache"
+	"backend/internal/features/cache"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"backend/internal/app/core/cache"
+	"backend/internal/features/cache"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"

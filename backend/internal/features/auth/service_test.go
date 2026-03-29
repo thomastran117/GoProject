@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"backend/internal/app/core/cache"
+	"backend/internal/features/cache"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
