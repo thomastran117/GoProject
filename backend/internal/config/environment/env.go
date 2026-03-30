@@ -36,6 +36,13 @@ type Env struct {
 	AzureStorageAccountName   string
 	AzureStorageAccountKey    string
 	AzureStorageContainerName string
+
+	// Email (Gmail SMTP)
+	EmailFrom        string
+	EmailAppPassword string
+
+	// App
+	AppURL string
 }
 
 // IsProd returns true when APP_ENV=production.
@@ -50,6 +57,11 @@ func (e *Env) HasOAuth() bool { return e.GoogleClientID != "" && e.MicrosoftClie
 // HasAzureBlob reports whether Azure Blob Storage credentials are configured.
 func (e *Env) HasAzureBlob() bool {
 	return e.AzureStorageAccountName != "" && e.AzureStorageAccountKey != ""
+}
+
+// HasEmail reports whether Gmail SMTP credentials are configured.
+func (e *Env) HasEmail() bool {
+	return e.EmailFrom != "" && e.EmailAppPassword != ""
 }
 
 // cfg is the package-level singleton populated by Load.
@@ -79,6 +91,10 @@ func Load() {
 		AzureStorageAccountName:   getenv("AZURE_STORAGE_ACCOUNT_NAME", ""),
 		AzureStorageAccountKey:    getenv("AZURE_STORAGE_ACCOUNT_KEY", ""),
 		AzureStorageContainerName: getenv("AZURE_STORAGE_CONTAINER_NAME", "uploads"),
+
+		EmailFrom:        getenv("GMAIL_FROM", ""),
+		EmailAppPassword: getenv("GMAIL_APP_PASSWORD", ""),
+		AppURL:           getenv("APP_URL", "http://localhost:5173"),
 	}
 	cfg.validate()
 }
@@ -98,6 +114,9 @@ func (e *Env) validate() {
 		{"TURNSTILE_SECRET_KEY", e.TurnstileSecretKey, "Turnstile captcha"},
 		{"AZURE_STORAGE_ACCOUNT_NAME", e.AzureStorageAccountName, "Azure Blob Storage"},
 		{"AZURE_STORAGE_ACCOUNT_KEY", e.AzureStorageAccountKey, "Azure Blob Storage"},
+		{"GMAIL_FROM", e.EmailFrom, "email verification"},
+		{"GMAIL_APP_PASSWORD", e.EmailAppPassword, "email verification"},
+		{"APP_URL", e.AppURL, "email verification"},
 	}
 
 	// JWT_SECRET has an insecure default — treat the default as missing in prod.

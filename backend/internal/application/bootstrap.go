@@ -7,6 +7,7 @@ import (
 	"backend/internal/config/environment"
 	configredis "backend/internal/config/redis"
 	"backend/internal/external/blob"
+	"backend/internal/external/email"
 	"backend/internal/features/auth"
 	"backend/internal/features/cache"
 	"backend/internal/features/health"
@@ -50,8 +51,15 @@ func MountRoutes() *gin.Engine {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
+	var emailSender email.Sender
+	if env.HasEmail() {
+		emailSender = email.NewGmailService(env.EmailFrom, env.EmailAppPassword)
+	} else {
+		log.Println("config: GMAIL_FROM/GMAIL_APP_PASSWORD not configured (email verification disabled)")
+	}
+
 	authRepo := auth.NewRepository(database.DB)
-	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile())
+	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile(), configredis.Client, emailSender, env.AppURL)
 	authHandler := auth.NewHandler(authService)
 
 	profileRepo := profile.NewRepository(database.DB)
