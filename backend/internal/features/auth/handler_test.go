@@ -28,21 +28,25 @@ func init() {
 // --- mock service ---
 
 type mockService struct {
-	loginFn     func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
-	signupFn    func(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
-	setRoleFn   func(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
-	refreshFn   func(ctx context.Context, refreshToken string) (*AuthResponse, error)
-	logoutFn    func(ctx context.Context, refreshToken string) error
-	googleFn    func(ctx context.Context, idToken string) (*AuthResponse, error)
-	microsoftFn func(ctx context.Context, idToken string) (*AuthResponse, error)
-	appleFn     func(ctx context.Context, t string) (*AuthResponse, error)
+	loginFn        func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
+	signupFn       func(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error)
+	verifyEmailFn  func(ctx context.Context, token string) (*AuthResponse, error)
+	setRoleFn      func(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
+	refreshFn      func(ctx context.Context, refreshToken string) (*AuthResponse, error)
+	logoutFn       func(ctx context.Context, refreshToken string) error
+	googleFn       func(ctx context.Context, idToken string) (*AuthResponse, error)
+	microsoftFn    func(ctx context.Context, idToken string) (*AuthResponse, error)
+	appleFn        func(ctx context.Context, t string) (*AuthResponse, error)
 }
 
 func (m *mockService) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
 	return m.loginFn(ctx, email, password, captcha, rememberMe)
 }
-func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error) {
+func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error) {
 	return m.signupFn(ctx, email, password, captcha, role, rememberMe)
+}
+func (m *mockService) VerifyEmail(ctx context.Context, token string) (*AuthResponse, error) {
+	return m.verifyEmailFn(ctx, token)
 }
 func (m *mockService) SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error) {
 	return m.setRoleFn(ctx, userID, role)
@@ -82,7 +86,7 @@ func newRouter(svc authService) *gin.Engine {
 	r.Use(middleware.ClientInfoMiddleware())
 	r.POST("/login", h.HandleLogin)
 	r.POST("/signup", h.HandleSignup)
-	r.GET("/verify", h.HandleVerify)
+	r.POST("/verify", h.HandleVerify)
 	r.POST("/google", h.HandleGoogle)
 	r.POST("/microsoft", h.HandleMicrosoft)
 	r.POST("/apple", h.HandleApple)
@@ -334,12 +338,100 @@ func TestFormatAuthResponse_Mobile_ReturnsBothTokensInBody(t *testing.T) {
 
 // --- HandleVerify ---
 
-func TestHandleVerify_Returns501(t *testing.T) {
+func TestHandleVerify_InvalidJSON_Returns400(t *testing.T) {
 	r := newRouter(&mockService{})
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/verify", nil))
-	if w.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501, got %d", w.Code)
+	req := httptest.NewRequest(http.MethodPost, "/verify", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_ServiceError_ReturnsErrorStatus(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
+			return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_VERIFY_TOKEN", Message: "invalid or expired"}
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "bad-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	body := getResponseBody(t, w)
+	errBlock := body["error"].(map[string]any)
+	if errBlock["code"] != "INVALID_VERIFY_TOKEN" {
+		t.Errorf("unexpected error code: %v", errBlock["code"])
+	}
+}
+
+func TestHandleVerify_Success_Web(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
+			return okAuthResponse(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["access_token"] != "access-token" {
+		t.Errorf("expected access_token in body, got %v", data["access_token"])
+	}
+	if _, hasRefresh := data["refresh_token"]; hasRefresh {
+		t.Error("refresh_token should not appear in body for web clients")
+	}
+	var found bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected refresh_token cookie to be set for web client")
+	}
+}
+
+func TestHandleVerify_Success_Mobile(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
+			return okAuthResponse(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", mobileUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	data := body["data"].(map[string]any)
+	if data["refresh_token"] != "refresh-token" {
+		t.Errorf("expected refresh_token in body for mobile, got %v", data["refresh_token"])
 	}
 }
 
@@ -451,8 +543,8 @@ func TestHandleSignup_InvalidRole_Returns400(t *testing.T) {
 
 func TestHandleSignup_Success(t *testing.T) {
 	svc := &mockService{
-		signupFn: func(_ context.Context, _, _, _, _ string, _ bool) (*AuthResponse, error) {
-			return okAuthResponse(), nil
+		signupFn: func(_ context.Context, _, _, _, _ string, _ bool) (*SignupPendingResponse, error) {
+			return &SignupPendingResponse{Message: "Verification email sent. Please check your inbox."}, nil
 		},
 	}
 	r := newRouter(svc)
@@ -466,6 +558,17 @@ func TestHandleSignup_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["message"] == "" {
+		t.Error("expected a message in the response data")
+	}
+	if _, hasToken := data["access_token"]; hasToken {
+		t.Error("signup response should not contain an access_token")
 	}
 }
 

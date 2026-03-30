@@ -15,7 +15,8 @@ const refreshCookieName = "refresh_token"
 
 type authService interface {
 	Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
-	Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*AuthResponse, error)
+	Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error)
+	VerifyEmail(ctx context.Context, token string) (*AuthResponse, error)
 	SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
@@ -49,6 +50,10 @@ type oauthRequest struct {
 
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type verifyRequest struct {
+	Token string `json:"token" binding:"required"`
 }
 
 type Handler struct {
@@ -88,23 +93,34 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 		return
 	}
 
-	info, ok := middleware.GetClientInfo(c)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "client info missing"})
-		return
-	}
-
 	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Captcha, req.Role, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	h.formatAuthResponse(c, info, resp)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": resp})
 }
 
 func (h *Handler) HandleVerify(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"message": "Not ready"})
+	var req verifyRequest
+	if !request.BindJSON(c, &req) {
+		return
+	}
+
+	info, ok := middleware.GetClientInfo(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client info missing"})
+		return
+	}
+
+	resp, err := h.service.VerifyEmail(c.Request.Context(), req.Token)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	h.formatAuthResponse(c, info, resp)
 }
 
 func (h *Handler) HandleGoogle(c *gin.Context) {
