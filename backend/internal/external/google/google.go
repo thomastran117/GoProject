@@ -1,4 +1,4 @@
-package auth
+package google
 
 import (
 	"context"
@@ -19,7 +19,12 @@ const googleRetryMax = 3
 const googleRetryBase = 100 * time.Millisecond
 const googleRetryMaxDelay = 1 * time.Second
 
-type googleTokenInfo struct {
+// verifyTimeout caps the total time spent verifying a single token,
+// including all retry attempts.
+const verifyTimeout = 15 * time.Second
+
+// TokenInfo holds the validated claims from a Google ID token.
+type TokenInfo struct {
 	Sub           string `json:"sub"`
 	Aud           string `json:"aud"`
 	Email         string `json:"email"`
@@ -29,24 +34,36 @@ type googleTokenInfo struct {
 	ErrorDesc     string `json:"error_description"`
 }
 
-var errInvalidGoogleToken = &middleware.APIError{
+var errInvalidToken = &middleware.APIError{
 	Status:  http.StatusUnauthorized,
 	Code:    "INVALID_GOOGLE_TOKEN",
 	Message: "Google token is invalid or expired",
 }
 
-// verifyGoogleIDToken calls Google's tokeninfo endpoint to validate the ID token
+// Client verifies Google ID tokens against Google's tokeninfo endpoint.
+type Client struct {
+	httpClient *http.Client
+	clientID   string
+}
+
+// NewClient creates a Client. If clientID is non-empty, the aud claim of every
+// verified token must match it.
+func NewClient(httpClient *http.Client, clientID string) *Client {
+	return &Client{httpClient: httpClient, clientID: clientID}
+}
+
+// VerifyIDToken calls Google's tokeninfo endpoint to validate the ID token
 // and returns the parsed claims on success. Transient errors (network failures,
 // 429, 5xx) are retried up to googleRetryMax times with exponential backoff and
 // jitter. Permanent errors (4xx) are returned immediately.
-// A hard oauthVerifyTimeout is applied over the caller's context so the total
+// A hard verifyTimeout is applied over the caller's context so the total
 // verification time (including all retries) is always bounded.
-func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*googleTokenInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, oauthVerifyTimeout)
+func (c *Client) VerifyIDToken(ctx context.Context, idToken string) (*TokenInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
 	defer cancel()
 
 	var (
-		body    googleTokenInfo
+		body    TokenInfo
 		lastErr error
 	)
 
@@ -71,7 +88,7 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 			return nil, fmt.Errorf("failed to build google tokeninfo request: %w", err)
 		}
 
-		resp, err := s.httpClient.Do(req)
+		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("google token verification failed: %w", err)
 			continue // network error — transient, retry
@@ -85,7 +102,7 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, errInvalidGoogleToken // 4xx — permanent, don't retry
+			return nil, errInvalidToken // 4xx — permanent, don't retry
 		}
 
 		err = json.NewDecoder(resp.Body).Decode(&body)
@@ -105,24 +122,24 @@ func (s *Service) verifyGoogleIDToken(ctx context.Context, idToken string) (*goo
 	info := &body
 
 	if info.ErrorDesc != "" || info.Sub == "" {
-		return nil, errInvalidGoogleToken
+		return nil, errInvalidToken
 	}
 
 	// Validate issuer explicitly rather than relying solely on Google's check.
 	if info.Iss != googleIssuer1 && info.Iss != googleIssuer2 {
-		return nil, errInvalidGoogleToken
+		return nil, errInvalidToken
 	}
 
 	// Validate expiry explicitly. Exp is a Unix timestamp string.
 	var exp int64
 	if _, err := fmt.Sscanf(info.Exp, "%d", &exp); err != nil || exp == 0 {
-		return nil, errInvalidGoogleToken
+		return nil, errInvalidToken
 	}
 	if time.Now().Unix() >= exp {
-		return nil, errInvalidGoogleToken
+		return nil, errInvalidToken
 	}
 
-	if s.googleClientID != "" && info.Aud != s.googleClientID {
+	if c.clientID != "" && info.Aud != c.clientID {
 		return nil, &middleware.APIError{
 			Status:  http.StatusUnauthorized,
 			Code:    "INVALID_GOOGLE_TOKEN",
