@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"backend/internal/features/token"
+	"backend/internal/application/middleware"
 	"backend/internal/features/cache"
+	"backend/internal/features/token"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -28,6 +29,10 @@ func initTokenService(t *testing.T) {
 
 func newTestService() *Service {
 	return &Service{} // repo is nil — only used for methods that don't touch the DB
+}
+
+func newTestServiceWithSchoolFn(fn func(ctx context.Context, id uint64) (bool, error)) *Service {
+	return &Service{skipTurnstile: true, schoolExists: fn}
 }
 
 // --- HashPassword / ComparePassword ---
@@ -104,5 +109,40 @@ func TestLogout_RevokesRefreshToken(t *testing.T) {
 	_, err = token.ValidateRefresh(ctx, pair.RefreshToken)
 	if err == nil {
 		t.Error("expected refresh token to be invalid after logout")
+	}
+}
+
+// --- Signup school validation ---
+
+func TestSignup_TeacherMissingSchoolID(t *testing.T) {
+	svc := newTestServiceWithSchoolFn(nil)
+	_, err := svc.Signup(context.Background(), "teacher@example.com", "Str0ng!Pass", "", RoleTeacher, nil, false)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	apiErr, ok := err.(*middleware.APIError)
+	if !ok {
+		t.Fatalf("expected *middleware.APIError, got %T", err)
+	}
+	if apiErr.Code != "SCHOOL_REQUIRED" {
+		t.Errorf("expected code SCHOOL_REQUIRED, got %s", apiErr.Code)
+	}
+}
+
+func TestSignup_TeacherSchoolNotFound(t *testing.T) {
+	svc := newTestServiceWithSchoolFn(func(_ context.Context, _ uint64) (bool, error) {
+		return false, nil
+	})
+	id := uint64(99)
+	_, err := svc.Signup(context.Background(), "teacher@example.com", "Str0ng!Pass", "", RoleTeacher, &id, false)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	apiErr, ok := err.(*middleware.APIError)
+	if !ok {
+		t.Fatalf("expected *middleware.APIError, got %T", err)
+	}
+	if apiErr.Code != "SCHOOL_NOT_FOUND" {
+		t.Errorf("expected code SCHOOL_NOT_FOUND, got %s", apiErr.Code)
 	}
 }
