@@ -15,7 +15,7 @@ const refreshCookieName = "refresh_token"
 
 type authService interface {
 	Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
-	Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error)
+	Signup(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error)
 	VerifyEmail(ctx context.Context, token string) (*AuthResponse, error)
 	SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error)
@@ -33,11 +33,12 @@ type loginRequest struct {
 }
 
 type signupRequest struct {
-	Email      string `json:"email"       binding:"required,email"`
-	Password   string `json:"password"    binding:"required,min=8,strong_password"`
-	Role       string `json:"role"        binding:"required,valid_signup_role"`
-	Captcha    string `json:"captcha"     binding:"required"`
-	RememberMe bool   `json:"remember_me"`
+	Email      string  `json:"email"       binding:"required,email"`
+	Password   string  `json:"password"    binding:"required,min=8,strong_password"`
+	Role       string  `json:"role"        binding:"required,valid_signup_role"`
+	Captcha    string  `json:"captcha"     binding:"required"`
+	SchoolID   *uint64 `json:"school_id"`
+	RememberMe bool    `json:"remember_me"`
 }
 
 type setRoleRequest struct {
@@ -93,7 +94,7 @@ func (h *Handler) HandleSignup(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Captcha, req.Role, req.RememberMe)
+	resp, err := h.service.Signup(c.Request.Context(), req.Email, req.Password, req.Captcha, req.Role, req.SchoolID, req.RememberMe)
 	if err != nil {
 		c.Error(err)
 		return

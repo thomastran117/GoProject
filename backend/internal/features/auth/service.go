@@ -44,10 +44,11 @@ type SignupPendingResponse struct {
 
 // pendingSignup holds the data stored in Redis while awaiting email verification.
 type pendingSignup struct {
-	Email        string `json:"email"`
-	PasswordHash string `json:"password_hash"`
-	Role         string `json:"role"`
-	RememberMe   bool   `json:"remember_me"`
+	Email        string  `json:"email"`
+	PasswordHash string  `json:"password_hash"`
+	Role         string  `json:"role"`
+	SchoolID     *uint64 `json:"school_id,omitempty"`
+	RememberMe   bool    `json:"remember_me"`
 }
 
 const pendingSignupTTL = 24 * time.Hour
@@ -62,6 +63,7 @@ type Service struct {
 	redisClient        *redis.Client
 	emailSender        email.Sender // nil in dev when email is not configured
 	appURL             string
+	schoolExists       func(ctx context.Context, id uint64) (bool, error)
 }
 
 func NewService(
@@ -71,6 +73,7 @@ func NewService(
 	redisClient *redis.Client,
 	emailSender email.Sender,
 	appURL string,
+	schoolExists func(ctx context.Context, id uint64) (bool, error),
 ) *Service {
 	// Shared across all OAuth and captcha requests. The 10-second timeout is a
 	// hard cap; per-request context deadlines still take precedence.
@@ -85,6 +88,7 @@ func NewService(
 		redisClient:        redisClient,
 		emailSender:        emailSender,
 		appURL:             appURL,
+		schoolExists:       schoolExists,
 	}
 }
 
@@ -132,12 +136,33 @@ func (s *Service) Login(ctx context.Context, email, password, captcha string, re
 	}, nil
 }
 
-func (s *Service) Signup(ctx context.Context, addr, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error) {
+func (s *Service) Signup(ctx context.Context, addr, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error) {
 	if !IsValidSignupRole(role) {
 		return nil, &middleware.APIError{
 			Status:  http.StatusBadRequest,
 			Code:    "INVALID_ROLE",
 			Message: "Role must be one of: student, teacher, principal, teaching_assistant",
+		}
+	}
+
+	if role == RoleTeacher {
+		if schoolID == nil {
+			return nil, &middleware.APIError{
+				Status:  http.StatusBadRequest,
+				Code:    "SCHOOL_REQUIRED",
+				Message: "Teachers must provide a school ID",
+			}
+		}
+		exists, err := s.schoolExists(ctx, *schoolID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, &middleware.APIError{
+				Status:  http.StatusBadRequest,
+				Code:    "SCHOOL_NOT_FOUND",
+				Message: "The specified school does not exist",
+			}
 		}
 	}
 
@@ -169,6 +194,7 @@ func (s *Service) Signup(ctx context.Context, addr, password, captcha, role stri
 		Email:        addr,
 		PasswordHash: hash,
 		Role:         role,
+		SchoolID:     schoolID,
 		RememberMe:   rememberMe,
 	}
 	data, err := json.Marshal(pending)
@@ -226,7 +252,7 @@ func (s *Service) VerifyEmail(ctx context.Context, verifyToken string) (*AuthRes
 		}
 	}
 
-	user, err := s.repo.Create(pending.Email, pending.PasswordHash, pending.Role)
+	user, err := s.repo.Create(pending.Email, pending.PasswordHash, pending.Role, pending.SchoolID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+
 	"backend/internal/application/middleware"
 	"backend/internal/application/validators"
 	"backend/internal/config/database"
@@ -60,14 +62,19 @@ func MountRoutes() *gin.Engine {
 	}
 
 	authRepo := auth.NewRepository(database.DB)
-	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile(), configredis.Client, emailSender, env.AppURL)
+
+	schoolRepo := school.NewRepository(database.DB)
+	schoolExistsFn := func(ctx context.Context, id uint64) (bool, error) {
+		s, err := schoolRepo.FindByID(id)
+		return s != nil, err
+	}
+
+	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile(), configredis.Client, emailSender, env.AppURL, schoolExistsFn)
 	authHandler := auth.NewHandler(authService)
 
 	profileRepo := profile.NewRepository(database.DB)
 	profileService := profile.NewService(profileRepo)
 	profileHandler := profile.NewHandler(profileService)
-
-	schoolRepo := school.NewRepository(database.DB)
 	schoolService := school.NewService(schoolRepo)
 	schoolHandler := school.NewHandler(schoolService)
 

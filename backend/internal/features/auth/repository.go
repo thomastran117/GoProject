@@ -19,6 +19,7 @@ type User struct {
 	Email        string    `gorm:"uniqueIndex;size:255;not null"`
 	PasswordHash string    `gorm:"column:password_hash;size:255;not null"`
 	Role         string    `gorm:";size:255;not null"`
+	SchoolID     *uint64   `gorm:"column:school_id;index"`
 	GoogleID     *string   `gorm:"column:google_id;uniqueIndex;size:255"`
 	MicrosoftID  *string   `gorm:"column:microsoft_id;uniqueIndex;size:255"`
 	CreatedAt    time.Time
@@ -223,11 +224,12 @@ func (r *Repository) UpdateRole(userID uint64, role string) (*User, error) {
 	return r.FindByID(userID)
 }
 
-func (r *Repository) Create(email, passwordHash, role string) (*User, error) {
+func (r *Repository) Create(email, passwordHash, role string, schoolID *uint64) (*User, error) {
 	u := &User{
 		Email:        email,
 		PasswordHash: passwordHash,
-		Role: role,
+		Role:         role,
+		SchoolID:     schoolID,
 	}
 	if result := r.db.Create(u); result.Error != nil {
 		return nil, result.Error

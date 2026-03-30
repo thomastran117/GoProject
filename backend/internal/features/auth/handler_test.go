@@ -29,7 +29,7 @@ func init() {
 
 type mockService struct {
 	loginFn        func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
-	signupFn       func(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error)
+	signupFn       func(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error)
 	verifyEmailFn  func(ctx context.Context, token string) (*AuthResponse, error)
 	setRoleFn      func(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	refreshFn      func(ctx context.Context, refreshToken string) (*AuthResponse, error)
@@ -42,8 +42,8 @@ type mockService struct {
 func (m *mockService) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
 	return m.loginFn(ctx, email, password, captcha, rememberMe)
 }
-func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, rememberMe bool) (*SignupPendingResponse, error) {
-	return m.signupFn(ctx, email, password, captcha, role, rememberMe)
+func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error) {
+	return m.signupFn(ctx, email, password, captcha, role, schoolID, rememberMe)
 }
 func (m *mockService) VerifyEmail(ctx context.Context, token string) (*AuthResponse, error) {
 	return m.verifyEmailFn(ctx, token)
@@ -543,7 +543,7 @@ func TestHandleSignup_InvalidRole_Returns400(t *testing.T) {
 
 func TestHandleSignup_Success(t *testing.T) {
 	svc := &mockService{
-		signupFn: func(_ context.Context, _, _, _, _ string, _ bool) (*SignupPendingResponse, error) {
+		signupFn: func(_ context.Context, _, _, _, _ string, _ *uint64, _ bool) (*SignupPendingResponse, error) {
 			return &SignupPendingResponse{Message: "Verification email sent. Please check your inbox."}, nil
 		},
 	}
@@ -569,6 +569,53 @@ func TestHandleSignup_Success(t *testing.T) {
 	}
 	if _, hasToken := data["access_token"]; hasToken {
 		t.Error("signup response should not contain an access_token")
+	}
+}
+
+func TestHandleSignup_TeacherWithoutSchoolID_Returns400(t *testing.T) {
+	svc := &mockService{
+		signupFn: func(_ context.Context, _, _, _, _ string, _ *uint64, _ bool) (*SignupPendingResponse, error) {
+			return nil, &middleware.APIError{
+				Status:  http.StatusBadRequest,
+				Code:    "SCHOOL_REQUIRED",
+				Message: "Teachers must provide a school ID",
+			}
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/signup", jsonBody(t, map[string]any{
+		"email": "teacher@example.com", "password": "Str0ng!Pass", "role": "teacher", "captcha": "token",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSignup_TeacherWithSchoolID_Success(t *testing.T) {
+	var capturedSchoolID *uint64
+	svc := &mockService{
+		signupFn: func(_ context.Context, _, _, _, _ string, sid *uint64, _ bool) (*SignupPendingResponse, error) {
+			capturedSchoolID = sid
+			return &SignupPendingResponse{Message: "Verification email sent. Please check your inbox."}, nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/signup", jsonBody(t, map[string]any{
+		"email": "teacher@example.com", "password": "Str0ng!Pass", "role": "teacher", "captcha": "token", "school_id": uint64(5),
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if capturedSchoolID == nil || *capturedSchoolID != 5 {
+		t.Errorf("expected school_id=5 passed to service, got %v", capturedSchoolID)
 	}
 }
 
