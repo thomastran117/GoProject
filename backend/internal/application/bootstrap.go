@@ -12,6 +12,7 @@ import (
 	"backend/internal/features/cache"
 	"backend/internal/features/health"
 	"backend/internal/features/profile"
+	"backend/internal/features/school"
 	"backend/internal/features/token"
 
 	"log"
@@ -47,7 +48,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -66,6 +67,10 @@ func MountRoutes() *gin.Engine {
 	profileService := profile.NewService(profileRepo)
 	profileHandler := profile.NewHandler(profileService)
 
+	schoolRepo := school.NewRepository(database.DB)
+	schoolService := school.NewService(schoolRepo)
+	schoolHandler := school.NewHandler(schoolService)
+
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
 	}
@@ -82,6 +87,7 @@ func MountRoutes() *gin.Engine {
 	auth.MountAuthRoutes(api, authHandler)
 
 	profile.MountProfileRoutes(api, profileHandler)
+	school.MountSchoolRoutes(api, schoolHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
