@@ -12,6 +12,7 @@ import (
 	"backend/internal/external/email"
 	"backend/internal/features/auth"
 	"backend/internal/features/cache"
+	"backend/internal/features/course"
 	"backend/internal/features/health"
 	"backend/internal/features/profile"
 	"backend/internal/features/school"
@@ -50,7 +51,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -78,9 +79,28 @@ func MountRoutes() *gin.Engine {
 	schoolService := school.NewService(schoolRepo)
 	schoolHandler := school.NewHandler(schoolService)
 
-	schoolRepo := school.NewRepository(database.DB)
-	schoolService := school.NewService(schoolRepo)
-	schoolHandler := school.NewHandler(schoolService)
+	teacherExistsFn := func(ctx context.Context, id uint64) (bool, error) {
+		u, err := authRepo.FindByID(id)
+		if err != nil {
+			return false, err
+		}
+		return u != nil && u.Role == auth.RoleTeacher, nil
+	}
+
+	findSchoolFn := func(ctx context.Context, id uint64) (*course.SchoolInfo, error) {
+		s, err := schoolRepo.FindByID(id)
+		if err != nil {
+			return nil, err
+		}
+		if s == nil {
+			return nil, nil
+		}
+		return &course.SchoolInfo{PrincipalID: s.PrincipalID}, nil
+	}
+
+	courseRepo := course.NewRepository(database.DB)
+	courseService := course.NewService(courseRepo, schoolExistsFn, teacherExistsFn, findSchoolFn)
+	courseHandler := course.NewHandler(courseService)
 
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
@@ -99,6 +119,7 @@ func MountRoutes() *gin.Engine {
 
 	profile.MountProfileRoutes(api, profileHandler)
 	school.MountSchoolRoutes(api, schoolHandler)
+	course.MountCourseRoutes(api, courseHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
