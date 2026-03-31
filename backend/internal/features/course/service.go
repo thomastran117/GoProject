@@ -84,6 +84,7 @@ var validStatuses = map[string]bool{
 type courseRepository interface {
 	FindByID(id uint64) (*Course, error)
 	FindByIDs(ids []uint64) ([]*Course, error)
+	FindBySchoolAndCode(schoolID uint64, code string) (*Course, error)
 	Search(f SearchFilter) ([]*Course, error)
 	Create(c *Course) (*Course, error)
 	Update(id uint64, fields map[string]any) (*Course, error)
@@ -243,6 +244,16 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 		}
 		if !ok {
 			return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "TEACHER_NOT_FOUND", Message: "Teacher not found or user is not a teacher"}
+		}
+	}
+
+	if p.Code != existing.Code {
+		conflict, err := s.repo.FindBySchoolAndCode(existing.SchoolID, p.Code)
+		if err != nil {
+			return nil, err
+		}
+		if conflict != nil {
+			return nil, &middleware.APIError{Status: http.StatusConflict, Code: "COURSE_CODE_CONFLICT", Message: "A course with that code already exists in this school"}
 		}
 	}
 

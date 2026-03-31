@@ -60,14 +60,38 @@ func (r *Repository) FindByID(id uint64) (*Course, error) {
 	return &c, nil
 }
 
-// FindByIDs returns all courses whose primary key is in the given slice.
-// Rows that do not exist are silently omitted from the result.
+// FindByIDs returns courses whose primary key is in the given slice, ordered
+// to match the input slice. Rows that do not exist are silently omitted.
 func (r *Repository) FindByIDs(ids []uint64) ([]*Course, error) {
 	var courses []*Course
 	if err := r.db.Where("id IN ?", ids).Find(&courses).Error; err != nil {
 		return nil, err
 	}
-	return courses, nil
+	index := make(map[uint64]*Course, len(courses))
+	for _, c := range courses {
+		index[c.ID] = c
+	}
+	ordered := make([]*Course, 0, len(ids))
+	for _, id := range ids {
+		if c, ok := index[id]; ok {
+			ordered = append(ordered, c)
+		}
+	}
+	return ordered, nil
+}
+
+// FindBySchoolAndCode returns the course with the given school and code, or
+// nil if none exists. Used to pre-validate uniqueness before a write.
+func (r *Repository) FindBySchoolAndCode(schoolID uint64, code string) (*Course, error) {
+	var c Course
+	result := r.db.Where("school_id = ? AND code = ?", schoolID, code).First(&c)
+	if result.Error == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &c, nil
 }
 
 // SearchFilter holds optional predicates for the Search query. Zero values
@@ -99,16 +123,16 @@ func (r *Repository) Search(f SearchFilter) ([]*Course, error) {
 		q = q.Where("teacher_id = ?", f.TeacherID)
 	}
 	if f.Subject != "" {
-		q = q.Where("subject = ?", f.Subject)
+		q = q.Where("LOWER(subject) = LOWER(?)", f.Subject)
 	}
 	if f.GradeLevel != "" {
-		q = q.Where("grade_level = ?", f.GradeLevel)
+		q = q.Where("LOWER(grade_level) = LOWER(?)", f.GradeLevel)
 	}
 	if f.Status != "" {
-		q = q.Where("status = ?", f.Status)
+		q = q.Where("status = ?", f.Status) // status is a controlled enum; exact match is intentional
 	}
 	if f.Language != "" {
-		q = q.Where("language = ?", f.Language)
+		q = q.Where("LOWER(language) = LOWER(?)", f.Language)
 	}
 	var courses []*Course
 	if err := q.Find(&courses).Error; err != nil {

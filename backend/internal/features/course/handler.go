@@ -121,28 +121,17 @@ func (h *Handler) handleSearch(c *gin.Context) {
 	f.Status = c.Query("status")
 	f.Language = c.Query("language")
 
-	if raw := c.Query("school_id"); raw != "" {
-		id, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INVALID_SCHOOL_ID", "message": "Invalid school_id"},
-			})
-			return
-		}
-		f.SchoolID = id
+	schoolID, ok := parseQueryUint64(c, "school_id", "INVALID_SCHOOL_ID", "Invalid school_id")
+	if !ok {
+		return
 	}
-	if raw := c.Query("teacher_id"); raw != "" {
-		id, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INVALID_TEACHER_ID", "message": "Invalid teacher_id"},
-			})
-			return
-		}
-		f.TeacherID = id
+	f.SchoolID = schoolID
+
+	teacherID, ok := parseQueryUint64(c, "teacher_id", "INVALID_TEACHER_ID", "Invalid teacher_id")
+	if !ok {
+		return
 	}
+	f.TeacherID = teacherID
 
 	courses, err := h.service.Search(c.Request.Context(), f)
 	if err != nil {
@@ -264,4 +253,23 @@ func (h *Handler) handleDelete(c *gin.Context) {
 
 func parseCourseID(c *gin.Context) (uint64, error) {
 	return strconv.ParseUint(c.Param("id"), 10, 64)
+}
+
+// parseQueryUint64 reads a named query parameter and parses it as a uint64.
+// Returns (0, true) when the parameter is absent, (id, true) on success, and
+// (0, false) after writing a 400 response when the value is present but invalid.
+func parseQueryUint64(c *gin.Context, param, code, message string) (uint64, bool) {
+	raw := c.Query(param)
+	if raw == "" {
+		return 0, true
+	}
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": code, "message": message},
+		})
+		return 0, false
+	}
+	return id, true
 }
