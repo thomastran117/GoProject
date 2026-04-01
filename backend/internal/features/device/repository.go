@@ -32,6 +32,14 @@ func NewRepository(db *gorm.DB) *Repository {
 // Fingerprint computes the SHA-256 hex digest of the given User-Agent string.
 // The middleware already sanitizes and caps the UA at 512 chars, so this input
 // is stable and bounded.
+//
+// Limitation: User-Agent is the only signal used here. It is easy to spoof and
+// shared across devices with the same browser/OS combination, which can produce
+// false positives (treating a different device as known) or false negatives
+// (treating a reinstalled browser as a new device). This is intentional as a
+// low-friction baseline; callers that need stronger guarantees should layer
+// additional signals (e.g. a stable client-generated device ID sent in a
+// custom header) into the fingerprint before hashing.
 func Fingerprint(userAgent string) string {
 	sum := sha256.Sum256([]byte(userAgent))
 	return hex.EncodeToString(sum[:])

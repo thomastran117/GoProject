@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -285,7 +286,9 @@ func (s *Service) VerifyEmail(ctx context.Context, verifyToken string, clientInf
 	}
 
 	// Token is consumed — delete it so it cannot be reused.
-	_ = s.redisClient.Del(ctx, key).Err()
+	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("auth: failed to delete pending_signup key %s: %v", key, err)
+	}
 
 	return s.checkDeviceAndIssueTokens(ctx, user.ID, user.Email, user.Role, pending.RememberMe, clientInfo)
 }
@@ -312,9 +315,16 @@ func (s *Service) VerifyDevice(ctx context.Context, verifyToken string, clientIn
 	}
 
 	// Token is consumed first to prevent replay.
-	_ = s.redisClient.Del(ctx, key).Err()
+	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("device: failed to delete pending_device_auth key %s: %v", key, err)
+	}
 
-	if _, err := s.deviceRepo.Create(pending.UserID, pending.Fingerprint, pending.DeviceType, pending.UserAgent); err != nil {
+	// Register the device using signals from the current request rather than
+	// the stored values. This prevents a token holder from claiming an arbitrary
+	// device type or User-Agent that differs from the browser that is actually
+	// completing the verification.
+	fingerprint := device.Fingerprint(clientInfo.UserAgent)
+	if _, err := s.deviceRepo.Create(pending.UserID, fingerprint, string(clientInfo.DeviceType), clientInfo.UserAgent); err != nil {
 		return nil, err
 	}
 
@@ -493,9 +503,13 @@ func (s *Service) checkDeviceAndIssueTokens(
 
 	if known != nil {
 		// Familiar device — update last-seen asynchronously so we don't block
-		// the response on a non-critical write.
+		// the response on a non-critical write. Uses a background context so the
+		// update is not cancelled when the HTTP request context is done.
+		deviceID := known.ID
 		go func() {
-			_ = s.deviceRepo.UpdateLastSeen(known.ID)
+			if err := s.deviceRepo.UpdateLastSeen(deviceID); err != nil {
+				log.Printf("device: UpdateLastSeen(%d): %v", deviceID, err)
+			}
 		}()
 
 		ttl := refreshTTLFor(rememberMe)
