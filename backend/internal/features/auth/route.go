@@ -15,6 +15,7 @@ func MountAuthRoutes(rg *gin.RouterGroup, h *Handler) {
 		auth.POST("/google", h.HandleGoogle)
 		auth.POST("/microsoft", h.HandleMicrosoft)
 		auth.POST("/refresh", h.HandleRefresh)
+		auth.POST("/verify-device", h.HandleVerifyDevice)
 		auth.POST("/role", middleware.Authenticate(), h.HandleSetRole)
 	}
 }

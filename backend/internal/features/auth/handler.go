@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"backend/internal/application/request"
 	"backend/internal/application/middleware"
+	"backend/internal/application/request"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,15 +14,16 @@ import (
 const refreshCookieName = "refresh_token"
 
 type authService interface {
-	Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
+	Login(ctx context.Context, email, password, captcha string, rememberMe bool, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
 	Signup(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error)
-	VerifyEmail(ctx context.Context, token string) (*AuthResponse, error)
+	VerifyEmail(ctx context.Context, token string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	VerifyDevice(ctx context.Context, token string, clientInfo middleware.ClientInfo) (*AuthResponse, error)
 	SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	Refresh(ctx context.Context, refreshToken string) (*AuthResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
-	GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error)
-	MicrosoftAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error)
-	AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error)
+	GoogleAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	MicrosoftAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	AppleAuthenticate(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
 }
 
 type loginRequest struct {
@@ -57,6 +58,10 @@ type verifyRequest struct {
 	Token string `json:"token" binding:"required"`
 }
 
+type verifyDeviceRequest struct {
+	Token string `json:"token" binding:"required"`
+}
+
 type Handler struct {
 	service authService
 }
@@ -79,13 +84,13 @@ func (h *Handler) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.Login(c.Request.Context(), req.Email, req.Password, req.Captcha, req.RememberMe)
+	outcome, err := h.service.Login(c.Request.Context(), req.Email, req.Password, req.Captcha, req.RememberMe, info)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	h.formatAuthResponse(c, info, resp)
+	h.formatOutcome(c, info, outcome)
 }
 
 func (h *Handler) HandleSignup(c *gin.Context) {
@@ -115,7 +120,28 @@ func (h *Handler) HandleVerify(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.VerifyEmail(c.Request.Context(), req.Token)
+	outcome, err := h.service.VerifyEmail(c.Request.Context(), req.Token, info)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+
+	h.formatOutcome(c, info, outcome)
+}
+
+func (h *Handler) HandleVerifyDevice(c *gin.Context) {
+	var req verifyDeviceRequest
+	if !request.BindJSON(c, &req) {
+		return
+	}
+
+	info, ok := middleware.GetClientInfo(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client info missing"})
+		return
+	}
+
+	resp, err := h.service.VerifyDevice(c.Request.Context(), req.Token, info)
 	if err != nil {
 		c.Error(err)
 		return
@@ -136,14 +162,13 @@ func (h *Handler) HandleGoogle(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.GoogleAuthenticate(c.Request.Context(), req.Token)
+	outcome, err := h.service.GoogleAuthenticate(c.Request.Context(), req.Token, info)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-
-	h.formatAuthResponse(c, info, resp)
+	h.formatOutcome(c, info, outcome)
 }
 
 func (h *Handler) HandleMicrosoft(c *gin.Context) {
@@ -158,13 +183,13 @@ func (h *Handler) HandleMicrosoft(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.MicrosoftAuthenticate(c.Request.Context(), req.Token)
+	outcome, err := h.service.MicrosoftAuthenticate(c.Request.Context(), req.Token, info)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	h.formatAuthResponse(c, info, resp)
+	h.formatOutcome(c, info, outcome)
 }
 
 func (h *Handler) HandleApple(c *gin.Context) {
@@ -179,13 +204,13 @@ func (h *Handler) HandleApple(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.AppleAuthenticate(c.Request.Context(), req.Token)
+	outcome, err := h.service.AppleAuthenticate(c.Request.Context(), req.Token, info)
 	if err != nil {
 		c.Error(err)
 		return
 	}
 
-	h.formatAuthResponse(c, info, resp)
+	h.formatOutcome(c, info, outcome)
 }
 
 func (h *Handler) HandleSetRole(c *gin.Context) {
@@ -261,6 +286,22 @@ func (h *Handler) Logout(c *gin.Context) {
 }
 
 // --- private helpers ---
+
+// formatOutcome writes either a device challenge response or a full auth
+// response depending on which field of the LoginOutcome is populated.
+func (h *Handler) formatOutcome(c *gin.Context, info middleware.ClientInfo, outcome *LoginOutcome) {
+	if outcome.DeviceChallenge != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"device_verification_required": true,
+				"message":                      outcome.DeviceChallenge.Message,
+			},
+		})
+		return
+	}
+	h.formatAuthResponse(c, info, outcome.Auth)
+}
 
 // setRefreshCookie writes the refresh token as an HttpOnly cookie.
 // HttpOnly prevents JS access; Secure enforces HTTPS-only transmission.
