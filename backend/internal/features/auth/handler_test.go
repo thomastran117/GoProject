@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"backend/internal/application/middleware"
-	"backend/internal/features/token"
 	"backend/internal/application/validators"
+	"backend/internal/features/token"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -28,25 +28,29 @@ func init() {
 // --- mock service ---
 
 type mockService struct {
-	loginFn        func(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error)
+	loginFn        func(ctx context.Context, email, password, captcha string, rememberMe bool, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
 	signupFn       func(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error)
-	verifyEmailFn  func(ctx context.Context, token string) (*AuthResponse, error)
+	verifyEmailFn  func(ctx context.Context, token string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	verifyDeviceFn func(ctx context.Context, token string, clientInfo middleware.ClientInfo) (*AuthResponse, error)
 	setRoleFn      func(ctx context.Context, userID uint64, role string) (*AuthResponse, error)
 	refreshFn      func(ctx context.Context, refreshToken string) (*AuthResponse, error)
 	logoutFn       func(ctx context.Context, refreshToken string) error
-	googleFn       func(ctx context.Context, idToken string) (*AuthResponse, error)
-	microsoftFn    func(ctx context.Context, idToken string) (*AuthResponse, error)
-	appleFn        func(ctx context.Context, t string) (*AuthResponse, error)
+	googleFn       func(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	microsoftFn    func(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
+	appleFn        func(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*LoginOutcome, error)
 }
 
-func (m *mockService) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
-	return m.loginFn(ctx, email, password, captcha, rememberMe)
+func (m *mockService) Login(ctx context.Context, email, password, captcha string, rememberMe bool, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
+	return m.loginFn(ctx, email, password, captcha, rememberMe, clientInfo)
 }
 func (m *mockService) Signup(ctx context.Context, email, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error) {
 	return m.signupFn(ctx, email, password, captcha, role, schoolID, rememberMe)
 }
-func (m *mockService) VerifyEmail(ctx context.Context, token string) (*AuthResponse, error) {
-	return m.verifyEmailFn(ctx, token)
+func (m *mockService) VerifyEmail(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
+	return m.verifyEmailFn(ctx, t, clientInfo)
+}
+func (m *mockService) VerifyDevice(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*AuthResponse, error) {
+	return m.verifyDeviceFn(ctx, t, clientInfo)
 }
 func (m *mockService) SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error) {
 	return m.setRoleFn(ctx, userID, role)
@@ -57,14 +61,14 @@ func (m *mockService) Refresh(ctx context.Context, refreshToken string) (*AuthRe
 func (m *mockService) Logout(ctx context.Context, refreshToken string) error {
 	return m.logoutFn(ctx, refreshToken)
 }
-func (m *mockService) GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
-	return m.googleFn(ctx, idToken)
+func (m *mockService) GoogleAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
+	return m.googleFn(ctx, idToken, clientInfo)
 }
-func (m *mockService) MicrosoftAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
-	return m.microsoftFn(ctx, idToken)
+func (m *mockService) MicrosoftAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
+	return m.microsoftFn(ctx, idToken, clientInfo)
 }
-func (m *mockService) AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
-	return m.appleFn(ctx, t)
+func (m *mockService) AppleAuthenticate(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
+	return m.appleFn(ctx, t, clientInfo)
 }
 
 // --- test helpers ---
@@ -78,6 +82,18 @@ func okAuthResponse() *AuthResponse {
 	}
 }
 
+// okOutcome wraps okAuthResponse in a LoginOutcome representing a known device.
+func okOutcome() *LoginOutcome {
+	return &LoginOutcome{Auth: okAuthResponse()}
+}
+
+// deviceChallengeOutcome returns a LoginOutcome representing an unknown device.
+func deviceChallengeOutcome() *LoginOutcome {
+	return &LoginOutcome{DeviceChallenge: &DeviceChallengeResponse{
+		Message: "A verification email has been sent to your address.",
+	}}
+}
+
 // newRouter builds a gin engine with ErrorHandler + ClientInfoMiddleware already applied.
 func newRouter(svc authService) *gin.Engine {
 	h := &Handler{service: svc}
@@ -87,6 +103,7 @@ func newRouter(svc authService) *gin.Engine {
 	r.POST("/login", h.HandleLogin)
 	r.POST("/signup", h.HandleSignup)
 	r.POST("/verify", h.HandleVerify)
+	r.POST("/verify-device", h.HandleVerifyDevice)
 	r.POST("/google", h.HandleGoogle)
 	r.POST("/microsoft", h.HandleMicrosoft)
 	r.POST("/apple", h.HandleApple)
@@ -103,6 +120,7 @@ func newRouterNoClientInfo(svc authService) *gin.Engine {
 	r.Use(middleware.ErrorHandler())
 	r.POST("/login", h.HandleLogin)
 	r.POST("/signup", h.HandleSignup)
+	r.POST("/verify-device", h.HandleVerifyDevice)
 	r.POST("/refresh", h.HandleRefresh)
 	r.POST("/logout", h.Logout)
 	return r
@@ -269,21 +287,18 @@ func TestExtractRefreshToken_Mobile_FromBody(t *testing.T) {
 // --- formatAuthResponse ---
 
 func TestFormatAuthResponse_Web_SetsRefreshCookieAndReturnsAccessToken(t *testing.T) {
-	r := newRouter(&mockService{})
-	w := httptest.NewRecorder()
-
-	// Reach formatAuthResponse by making a successful login.
-	r2 := newRouter(&mockService{
-		loginFn: func(_ context.Context, _, _, _ string, _ bool) (*AuthResponse, error) {
-			return okAuthResponse(), nil
+	r := newRouter(&mockService{
+		loginFn: func(_ context.Context, _, _, _ string, _ bool, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return okOutcome(), nil
 		},
 	})
+	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/login", jsonBody(t, map[string]any{
 		"email": "user@example.com", "password": "password123", "captcha": "token",
 	}))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", desktopUA)
-	r2.ServeHTTP(w, req)
+	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -309,118 +324,18 @@ func TestFormatAuthResponse_Web_SetsRefreshCookieAndReturnsAccessToken(t *testin
 	if !found {
 		t.Error("expected refresh_token cookie to be set")
 	}
-	_ = r
 }
 
 func TestFormatAuthResponse_Mobile_ReturnsBothTokensInBody(t *testing.T) {
 	r := newRouter(&mockService{
-		loginFn: func(_ context.Context, _, _, _ string, _ bool) (*AuthResponse, error) {
-			return okAuthResponse(), nil
+		loginFn: func(_ context.Context, _, _, _ string, _ bool, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return okOutcome(), nil
 		},
 	})
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/login", jsonBody(t, map[string]any{
 		"email": "user@example.com", "password": "password123", "captcha": "token",
 	}))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", mobileUA)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	body := getResponseBody(t, w)
-	data := body["data"].(map[string]any)
-	if data["refresh_token"] != "refresh-token" {
-		t.Errorf("expected refresh_token in body for mobile, got %v", data["refresh_token"])
-	}
-}
-
-// --- HandleVerify ---
-
-func TestHandleVerify_InvalidJSON_Returns400(t *testing.T) {
-	r := newRouter(&mockService{})
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/verify", bytes.NewBufferString(`{bad`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", desktopUA)
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestHandleVerify_ServiceError_ReturnsErrorStatus(t *testing.T) {
-	svc := &mockService{
-		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
-			return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_VERIFY_TOKEN", Message: "invalid or expired"}
-		},
-	}
-	r := newRouter(svc)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "bad-token"}))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", desktopUA)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-	body := getResponseBody(t, w)
-	errBlock := body["error"].(map[string]any)
-	if errBlock["code"] != "INVALID_VERIFY_TOKEN" {
-		t.Errorf("unexpected error code: %v", errBlock["code"])
-	}
-}
-
-func TestHandleVerify_Success_Web(t *testing.T) {
-	svc := &mockService{
-		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
-			return okAuthResponse(), nil
-		},
-	}
-	r := newRouter(svc)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", desktopUA)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	body := getResponseBody(t, w)
-	if body["success"] != true {
-		t.Errorf("expected success=true, got %v", body["success"])
-	}
-	data := body["data"].(map[string]any)
-	if data["access_token"] != "access-token" {
-		t.Errorf("expected access_token in body, got %v", data["access_token"])
-	}
-	if _, hasRefresh := data["refresh_token"]; hasRefresh {
-		t.Error("refresh_token should not appear in body for web clients")
-	}
-	var found bool
-	for _, c := range w.Result().Cookies() {
-		if c.Name == refreshCookieName {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected refresh_token cookie to be set for web client")
-	}
-}
-
-func TestHandleVerify_Success_Mobile(t *testing.T) {
-	svc := &mockService{
-		verifyEmailFn: func(_ context.Context, _ string) (*AuthResponse, error) {
-			return okAuthResponse(), nil
-		},
-	}
-	r := newRouter(svc)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", mobileUA)
 	r.ServeHTTP(w, req)
@@ -464,7 +379,7 @@ func TestHandleLogin_InvalidJSON_Returns400(t *testing.T) {
 
 func TestHandleLogin_ServiceError_ReturnsErrorStatus(t *testing.T) {
 	svc := &mockService{
-		loginFn: func(_ context.Context, _, _, _ string, _ bool) (*AuthResponse, error) {
+		loginFn: func(_ context.Context, _, _, _ string, _ bool, _ middleware.ClientInfo) (*LoginOutcome, error) {
 			return nil, &middleware.APIError{Status: http.StatusUnauthorized, Code: "INVALID_CREDENTIALS", Message: "bad creds"}
 		},
 	}
@@ -489,8 +404,8 @@ func TestHandleLogin_ServiceError_ReturnsErrorStatus(t *testing.T) {
 
 func TestHandleLogin_Success_Web(t *testing.T) {
 	svc := &mockService{
-		loginFn: func(_ context.Context, _, _, _ string, _ bool) (*AuthResponse, error) {
-			return okAuthResponse(), nil
+		loginFn: func(_ context.Context, _, _, _ string, _ bool, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return okOutcome(), nil
 		},
 	}
 	r := newRouter(svc)
@@ -508,6 +423,303 @@ func TestHandleLogin_Success_Web(t *testing.T) {
 	body := getResponseBody(t, w)
 	if body["success"] != true {
 		t.Errorf("expected success=true, got %v", body["success"])
+	}
+}
+
+func TestHandleLogin_UnknownDevice_ReturnsDeviceChallenge(t *testing.T) {
+	svc := &mockService{
+		loginFn: func(_ context.Context, _, _, _ string, _ bool, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return deviceChallengeOutcome(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/login", jsonBody(t, map[string]any{
+		"email": "user@example.com", "password": "password123", "captcha": "token",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["device_verification_required"] != true {
+		t.Errorf("expected device_verification_required=true, got %v", data["device_verification_required"])
+	}
+	if data["message"] == "" || data["message"] == nil {
+		t.Error("expected a message in the device challenge response")
+	}
+	// No tokens should be present.
+	if _, hasToken := data["access_token"]; hasToken {
+		t.Error("access_token must not be present in device challenge response")
+	}
+	if _, hasRefresh := data["refresh_token"]; hasRefresh {
+		t.Error("refresh_token must not be present in device challenge response")
+	}
+	// No cookie should be set.
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			t.Error("refresh_token cookie must not be set on device challenge")
+		}
+	}
+}
+
+// --- HandleVerify ---
+
+func TestHandleVerify_InvalidJSON_Returns400(t *testing.T) {
+	r := newRouter(&mockService{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_ServiceError_ReturnsErrorStatus(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_VERIFY_TOKEN", Message: "invalid or expired"}
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "bad-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	body := getResponseBody(t, w)
+	errBlock := body["error"].(map[string]any)
+	if errBlock["code"] != "INVALID_VERIFY_TOKEN" {
+		t.Errorf("unexpected error code: %v", errBlock["code"])
+	}
+}
+
+func TestHandleVerify_Success_Web(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return okOutcome(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["access_token"] != "access-token" {
+		t.Errorf("expected access_token in body, got %v", data["access_token"])
+	}
+	if _, hasRefresh := data["refresh_token"]; hasRefresh {
+		t.Error("refresh_token should not appear in body for web clients")
+	}
+	var found bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected refresh_token cookie to be set for web client")
+	}
+}
+
+func TestHandleVerify_Success_Mobile(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return okOutcome(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", mobileUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	data := body["data"].(map[string]any)
+	if data["refresh_token"] != "refresh-token" {
+		t.Errorf("expected refresh_token in body for mobile, got %v", data["refresh_token"])
+	}
+}
+
+// TestHandleVerify_UnknownDevice_ReturnsDeviceChallenge verifies that if email
+// verification succeeds but the device is new, the handler surfaces a challenge
+// instead of immediately issuing tokens.
+func TestHandleVerify_UnknownDevice_ReturnsDeviceChallenge(t *testing.T) {
+	svc := &mockService{
+		verifyEmailFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*LoginOutcome, error) {
+			return deviceChallengeOutcome(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify", jsonBody(t, map[string]any{"token": "valid-uuid-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	data := body["data"].(map[string]any)
+	if data["device_verification_required"] != true {
+		t.Errorf("expected device_verification_required=true, got %v", data["device_verification_required"])
+	}
+	if _, hasToken := data["access_token"]; hasToken {
+		t.Error("access_token must not be present in device challenge response")
+	}
+}
+
+// --- HandleVerifyDevice ---
+
+func TestHandleVerifyDevice_MissingClientInfo_Returns400(t *testing.T) {
+	r := newRouterNoClientInfo(&mockService{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", jsonBody(t, map[string]any{"token": "some-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleVerifyDevice_InvalidJSON_Returns400(t *testing.T) {
+	r := newRouter(&mockService{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", bytes.NewBufferString(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleVerifyDevice_MissingToken_Returns400(t *testing.T) {
+	r := newRouter(&mockService{})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", jsonBody(t, map[string]any{}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleVerifyDevice_ServiceError_ReturnsErrorStatus(t *testing.T) {
+	svc := &mockService{
+		verifyDeviceFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*AuthResponse, error) {
+			return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_DEVICE_TOKEN", Message: "invalid or expired"}
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", jsonBody(t, map[string]any{"token": "bad-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+	body := getResponseBody(t, w)
+	errBlock := body["error"].(map[string]any)
+	if errBlock["code"] != "INVALID_DEVICE_TOKEN" {
+		t.Errorf("unexpected error code: %v", errBlock["code"])
+	}
+}
+
+func TestHandleVerifyDevice_Success_Web(t *testing.T) {
+	svc := &mockService{
+		verifyDeviceFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*AuthResponse, error) {
+			return okAuthResponse(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", jsonBody(t, map[string]any{"token": "valid-device-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", desktopUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+	data := body["data"].(map[string]any)
+	if data["access_token"] != "access-token" {
+		t.Errorf("expected access_token in body, got %v", data["access_token"])
+	}
+	if _, hasRefresh := data["refresh_token"]; hasRefresh {
+		t.Error("refresh_token should not appear in body for web clients")
+	}
+	var found bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected refresh_token cookie to be set for web client")
+	}
+}
+
+func TestHandleVerifyDevice_Success_Mobile(t *testing.T) {
+	svc := &mockService{
+		verifyDeviceFn: func(_ context.Context, _ string, _ middleware.ClientInfo) (*AuthResponse, error) {
+			return okAuthResponse(), nil
+		},
+	}
+	r := newRouter(svc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/verify-device", jsonBody(t, map[string]any{"token": "valid-device-token"}))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", mobileUA)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := getResponseBody(t, w)
+	data := body["data"].(map[string]any)
+	if data["refresh_token"] != "refresh-token" {
+		t.Errorf("expected refresh_token in body for mobile, got %v", data["refresh_token"])
+	}
+	if _, hasToken := data["access_token"]; !hasToken {
+		t.Error("expected access_token in body for mobile")
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"backend/internal/features/auth"
 	"backend/internal/features/cache"
 	"backend/internal/features/course"
+	"backend/internal/features/device"
 	"backend/internal/features/health"
 	"backend/internal/features/profile"
 	"backend/internal/features/school"
@@ -51,7 +52,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -63,6 +64,7 @@ func MountRoutes() *gin.Engine {
 	}
 
 	authRepo := auth.NewRepository(database.DB)
+	deviceRepo := device.NewRepository(database.DB)
 
 	schoolRepo := school.NewRepository(database.DB)
 	schoolExistsFn := func(ctx context.Context, id uint64) (bool, error) {
@@ -70,7 +72,7 @@ func MountRoutes() *gin.Engine {
 		return s != nil, err
 	}
 
-	authService := auth.NewService(authRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile(), configredis.Client, emailSender, env.AppURL, schoolExistsFn)
+	authService := auth.NewService(authRepo, deviceRepo, env.GoogleClientID, env.MicrosoftClientID, env.TurnstileSecretKey, !env.HasTurnstile(), configredis.Client, emailSender, env.AppURL, schoolExistsFn)
 	authHandler := auth.NewHandler(authService)
 
 	profileRepo := profile.NewRepository(database.DB)

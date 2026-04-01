@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"backend/internal/external/email"
 	"backend/internal/external/google"
 	"backend/internal/external/microsoft"
+	"backend/internal/features/device"
 	"backend/internal/features/token"
 
 	"github.com/google/uuid"
@@ -36,6 +38,19 @@ type UserData struct {
 	Role  string `json:"role"`
 }
 
+// LoginOutcome is returned by Login and OAuth authenticate methods.
+// Exactly one of Auth or DeviceChallenge is non-nil.
+type LoginOutcome struct {
+	Auth            *AuthResponse
+	DeviceChallenge *DeviceChallengeResponse
+}
+
+// DeviceChallengeResponse is returned when a login attempt comes from an
+// unrecognized device. Tokens are withheld until the user verifies via email.
+type DeviceChallengeResponse struct {
+	Message string `json:"message"`
+}
+
 // SignupPendingResponse is returned by Signup to indicate that a verification
 // email has been sent and account creation is pending email confirmation.
 type SignupPendingResponse struct {
@@ -51,10 +66,32 @@ type pendingSignup struct {
 	RememberMe   bool    `json:"remember_me"`
 }
 
-const pendingSignupTTL = 24 * time.Hour
+// pendingDeviceAuth holds the data stored in Redis while awaiting device
+// verification. It carries enough context to issue tokens once confirmed.
+type pendingDeviceAuth struct {
+	UserID      uint64 `json:"user_id"`
+	Email       string `json:"email"`
+	Role        string `json:"role"`
+	Fingerprint string `json:"fingerprint"`
+	DeviceType  string `json:"device_type"`
+	UserAgent   string `json:"user_agent"`
+	RememberMe  bool   `json:"remember_me"`
+}
+
+const pendingSignupTTL    = 24 * time.Hour
+const pendingDeviceAuthTTL = 15 * time.Minute
+
+// deviceRepository is the subset of device.Repository methods used by the auth
+// service. Defined here as an interface so that tests can substitute a mock.
+type deviceRepository interface {
+	FindByUserAndFingerprint(userID uint64, fingerprint string) (*device.Device, error)
+	Create(userID uint64, fingerprint, deviceType, userAgent string) (*device.Device, error)
+	UpdateLastSeen(id uint64) error
+}
 
 type Service struct {
 	repo               *Repository
+	deviceRepo         deviceRepository
 	googleVerifier     *google.Client
 	msVerifier         *microsoft.Client
 	turnstileSecretKey string
@@ -68,6 +105,7 @@ type Service struct {
 
 func NewService(
 	repo *Repository,
+	deviceRepo deviceRepository,
 	googleClientID, microsoftClientID, turnstileSecretKey string,
 	skipTurnstile bool,
 	redisClient *redis.Client,
@@ -80,6 +118,7 @@ func NewService(
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	return &Service{
 		repo:               repo,
+		deviceRepo:         deviceRepo,
 		googleVerifier:     google.NewClient(httpClient, googleClientID),
 		msVerifier:         microsoft.NewClient(httpClient, microsoftClientID),
 		turnstileSecretKey: turnstileSecretKey,
@@ -94,14 +133,14 @@ func NewService(
 
 // --- public interface ---
 
-func (s *Service) Login(ctx context.Context, email, password, captcha string, rememberMe bool) (*AuthResponse, error) {
+func (s *Service) Login(ctx context.Context, addr, password, captcha string, rememberMe bool, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
 	if !s.skipTurnstile {
 		if err := cloudflare.VerifyTurnstile(ctx, s.httpClient, s.turnstileSecretKey, captcha); err != nil {
 			return nil, err
 		}
 	}
 
-	user, err := s.repo.FindByEmail(email)
+	user, err := s.repo.FindByEmail(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -122,18 +161,7 @@ func (s *Service) Login(ctx context.Context, email, password, captcha string, re
 		}
 	}
 
-	ttl := refreshTTLFor(rememberMe)
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuthResponse{
-		AccessToken:  pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   ttl,
-		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
-	}, nil
+	return s.checkDeviceAndIssueTokens(ctx, user.ID, user.Email, user.Role, rememberMe, clientInfo)
 }
 
 func (s *Service) Signup(ctx context.Context, addr, password, captcha, role string, schoolID *uint64, rememberMe bool) (*SignupPendingResponse, error) {
@@ -218,7 +246,7 @@ func (s *Service) Signup(ctx context.Context, addr, password, captcha, role stri
 
 // VerifyEmail looks up the pending signup by token, creates the user account,
 // and returns a full auth response.
-func (s *Service) VerifyEmail(ctx context.Context, verifyToken string) (*AuthResponse, error) {
+func (s *Service) VerifyEmail(ctx context.Context, verifyToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
 	key := pendingSignupKey(verifyToken)
 	raw, err := s.redisClient.Get(ctx, key).Bytes()
 	if err == redis.Nil {
@@ -258,10 +286,50 @@ func (s *Service) VerifyEmail(ctx context.Context, verifyToken string) (*AuthRes
 	}
 
 	// Token is consumed — delete it so it cannot be reused.
-	_ = s.redisClient.Del(ctx, key).Err()
+	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("auth: failed to delete pending_signup key %s: %v", key, err)
+	}
+
+	return s.checkDeviceAndIssueTokens(ctx, user.ID, user.Email, user.Role, pending.RememberMe, clientInfo)
+}
+
+// VerifyDevice looks up the pending device-auth by token, registers the device,
+// and returns a full auth response.
+func (s *Service) VerifyDevice(ctx context.Context, verifyToken string, clientInfo middleware.ClientInfo) (*AuthResponse, error) {
+	key := pendingDeviceAuthKey(verifyToken)
+	raw, err := s.redisClient.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusBadRequest,
+			Code:    "INVALID_DEVICE_TOKEN",
+			Message: "Device verification link is invalid or has expired",
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var pending pendingDeviceAuth
+	if err := json.Unmarshal(raw, &pending); err != nil {
+		return nil, err
+	}
+
+	// Token is consumed first to prevent replay.
+	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("device: failed to delete pending_device_auth key %s: %v", key, err)
+	}
+
+	// Register the device using signals from the current request rather than
+	// the stored values. This prevents a token holder from claiming an arbitrary
+	// device type or User-Agent that differs from the browser that is actually
+	// completing the verification.
+	fingerprint := device.Fingerprint(clientInfo.UserAgent)
+	if _, err := s.deviceRepo.Create(pending.UserID, fingerprint, string(clientInfo.DeviceType), clientInfo.UserAgent); err != nil {
+		return nil, err
+	}
 
 	ttl := refreshTTLFor(pending.RememberMe)
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, ttl)
+	pair, err := token.GeneratePair(ctx, pending.UserID, pending.Email, pending.Role, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +338,16 @@ func (s *Service) VerifyEmail(ctx context.Context, verifyToken string) (*AuthRes
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
 		RefreshTTL:   ttl,
-		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
+		User:         UserData{ID: pending.UserID, Email: pending.Email, Role: pending.Role},
 	}, nil
 }
 
 func pendingSignupKey(token string) string {
 	return "pending_signup:" + token
+}
+
+func pendingDeviceAuthKey(token string) string {
+	return "pending_device_auth:" + token
 }
 
 func (s *Service) SetRole(ctx context.Context, userID uint64, role string) (*AuthResponse, error) {
@@ -371,40 +443,30 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	return token.RevokeRefresh(ctx, refreshToken)
 }
 
-func (s *Service) AppleAuthenticate(ctx context.Context, t string) (*AuthResponse, error) {
+func (s *Service) AppleAuthenticate(ctx context.Context, t string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
 	return nil, nil
 }
 
-func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
+func (s *Service) MicrosoftAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
 	claims, err := s.msVerifier.VerifyIDToken(ctx, idToken)
 	if err != nil {
 		return nil, err
 	}
 
-	email := claims.Email
-	if email == "" {
-		email = claims.PreferredUsername
+	addr := claims.Email
+	if addr == "" {
+		addr = claims.PreferredUsername
 	}
 
-	user, err := s.repo.FindOrCreateByMicrosoftID(claims.OID, email)
+	user, err := s.repo.FindOrCreateByMicrosoftID(claims.OID, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuthResponse{
-		AccessToken:  pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
-		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
-	}, nil
+	return s.checkDeviceAndIssueTokens(ctx, user.ID, user.Email, user.Role, false, clientInfo)
 }
 
-func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*AuthResponse, error) {
+func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string, clientInfo middleware.ClientInfo) (*LoginOutcome, error) {
 	claims, err := s.googleVerifier.VerifyIDToken(ctx, idToken)
 	if err != nil {
 		return nil, err
@@ -415,20 +477,90 @@ func (s *Service) GoogleAuthenticate(ctx context.Context, idToken string) (*Auth
 		return nil, err
 	}
 
-	pair, err := token.GeneratePair(ctx, user.ID, user.Email, user.Role, token.RefreshTTLDefault)
+	return s.checkDeviceAndIssueTokens(ctx, user.ID, user.Email, user.Role, false, clientInfo)
+}
+
+// --- private helpers ---
+
+// checkDeviceAndIssueTokens is the shared post-authentication step. It checks
+// whether the requesting device is already known for the user:
+//   - Known device: updates LastSeenAt and immediately issues tokens.
+//   - Unknown device: stores a short-lived pending record in Redis, sends a
+//     verification email, and returns a DeviceChallenge (no tokens yet).
+func (s *Service) checkDeviceAndIssueTokens(
+	ctx context.Context,
+	userID uint64,
+	userEmail, role string,
+	rememberMe bool,
+	clientInfo middleware.ClientInfo,
+) (*LoginOutcome, error) {
+	fingerprint := device.Fingerprint(clientInfo.UserAgent)
+
+	known, err := s.deviceRepo.FindByUserAndFingerprint(userID, fingerprint)
 	if err != nil {
 		return nil, err
 	}
 
-	return &AuthResponse{
-		AccessToken:  pair.AccessToken,
-		RefreshToken: pair.RefreshToken,
-		RefreshTTL:   token.RefreshTTLDefault,
-		User:         UserData{ID: user.ID, Email: user.Email, Role: user.Role},
-	}, nil
-}
+	if known != nil {
+		// Familiar device — update last-seen asynchronously so we don't block
+		// the response on a non-critical write. Uses a background context so the
+		// update is not cancelled when the HTTP request context is done.
+		deviceID := known.ID
+		go func() {
+			if err := s.deviceRepo.UpdateLastSeen(deviceID); err != nil {
+				log.Printf("device: UpdateLastSeen(%d): %v", deviceID, err)
+			}
+		}()
 
-// --- private helpers ---
+		ttl := refreshTTLFor(rememberMe)
+		pair, err := token.GeneratePair(ctx, userID, userEmail, role, ttl)
+		if err != nil {
+			return nil, err
+		}
+		return &LoginOutcome{Auth: &AuthResponse{
+			AccessToken:  pair.AccessToken,
+			RefreshToken: pair.RefreshToken,
+			RefreshTTL:   ttl,
+			User:         UserData{ID: userID, Email: userEmail, Role: role},
+		}}, nil
+	}
+
+	// Unknown device — initiate verification flow.
+	verifyToken := uuid.New().String()
+	pending := pendingDeviceAuth{
+		UserID:      userID,
+		Email:       userEmail,
+		Role:        role,
+		Fingerprint: fingerprint,
+		DeviceType:  string(clientInfo.DeviceType),
+		UserAgent:   clientInfo.UserAgent,
+		RememberMe:  rememberMe,
+	}
+	data, err := json.Marshal(pending)
+	if err != nil {
+		return nil, err
+	}
+
+	key := pendingDeviceAuthKey(verifyToken)
+	if err := s.redisClient.Set(ctx, key, data, pendingDeviceAuthTTL).Err(); err != nil {
+		return nil, err
+	}
+
+	if s.emailSender != nil {
+		verifyURL := fmt.Sprintf("%s/verify-device?token=%s", s.appURL, verifyToken)
+		body := fmt.Sprintf(
+			"A login was attempted from an unrecognized device.\n\n"+
+				"If this was you, verify this device by visiting the link below:\n\n%s\n\n"+
+				"This link expires in 15 minutes. If you did not attempt this login, you can ignore this email.",
+			verifyURL,
+		)
+		go email.SendWithRetry(context.Background(), s.emailSender, userEmail, "Verify your device", body)
+	}
+
+	return &LoginOutcome{DeviceChallenge: &DeviceChallengeResponse{
+		Message: "A verification email has been sent to your address. Please check your inbox to authorize this device.",
+	}}, nil
+}
 
 // HashPassword generates a bcrypt hash from the given plaintext password.
 func (s *Service) HashPassword(password string) (string, error) {
