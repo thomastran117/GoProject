@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"backend/internal/application/middleware"
+	"backend/internal/utilities/dbretry"
 )
 
 // Course is the database model for a course entity. Each course belongs to a
@@ -50,12 +51,14 @@ func NewRepository(db *gorm.DB) *Repository {
 // exists. Any unexpected database error is returned as a non-nil error.
 func (r *Repository) FindByID(id uint64) (*Course, error) {
 	var c Course
-	result := r.db.First(&c, id)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.First(&c, id).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
@@ -64,7 +67,10 @@ func (r *Repository) FindByID(id uint64) (*Course, error) {
 // to match the input slice. Rows that do not exist are silently omitted.
 func (r *Repository) FindByIDs(ids []uint64) ([]*Course, error) {
 	var courses []*Course
-	if err := r.db.Where("id IN ?", ids).Find(&courses).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Where("id IN ?", ids).Find(&courses).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	index := make(map[uint64]*Course, len(courses))
@@ -84,12 +90,14 @@ func (r *Repository) FindByIDs(ids []uint64) ([]*Course, error) {
 // nil if none exists. Used to pre-validate uniqueness before a write.
 func (r *Repository) FindBySchoolAndCode(schoolID uint64, code string) (*Course, error) {
 	var c Course
-	result := r.db.Where("school_id = ? AND code = ?", schoolID, code).First(&c)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.Where("school_id = ? AND code = ?", schoolID, code).First(&c).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
@@ -109,33 +117,36 @@ type SearchFilter struct {
 
 // Search returns courses matching all non-zero fields in the filter.
 func (r *Repository) Search(f SearchFilter) ([]*Course, error) {
-	q := r.db.Model(&Course{})
-	if f.Name != "" {
-		q = q.Where("name LIKE ?", "%"+f.Name+"%")
-	}
-	if f.Code != "" {
-		q = q.Where("code LIKE ?", "%"+f.Code+"%")
-	}
-	if f.SchoolID != 0 {
-		q = q.Where("school_id = ?", f.SchoolID)
-	}
-	if f.TeacherID != 0 {
-		q = q.Where("teacher_id = ?", f.TeacherID)
-	}
-	if f.Subject != "" {
-		q = q.Where("LOWER(subject) = LOWER(?)", f.Subject)
-	}
-	if f.GradeLevel != "" {
-		q = q.Where("LOWER(grade_level) = LOWER(?)", f.GradeLevel)
-	}
-	if f.Status != "" {
-		q = q.Where("status = ?", f.Status) // status is a controlled enum; exact match is intentional
-	}
-	if f.Language != "" {
-		q = q.Where("LOWER(language) = LOWER(?)", f.Language)
-	}
 	var courses []*Course
-	if err := q.Find(&courses).Error; err != nil {
+	err := dbretry.Do(func() error {
+		q := r.db.Model(&Course{})
+		if f.Name != "" {
+			q = q.Where("name LIKE ?", "%"+f.Name+"%")
+		}
+		if f.Code != "" {
+			q = q.Where("code LIKE ?", "%"+f.Code+"%")
+		}
+		if f.SchoolID != 0 {
+			q = q.Where("school_id = ?", f.SchoolID)
+		}
+		if f.TeacherID != 0 {
+			q = q.Where("teacher_id = ?", f.TeacherID)
+		}
+		if f.Subject != "" {
+			q = q.Where("LOWER(subject) = LOWER(?)", f.Subject)
+		}
+		if f.GradeLevel != "" {
+			q = q.Where("LOWER(grade_level) = LOWER(?)", f.GradeLevel)
+		}
+		if f.Status != "" {
+			q = q.Where("status = ?", f.Status) // status is a controlled enum; exact match is intentional
+		}
+		if f.Language != "" {
+			q = q.Where("LOWER(language) = LOWER(?)", f.Language)
+		}
+		return q.Find(&courses).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return courses, nil
@@ -145,7 +156,10 @@ func (r *Repository) Search(f SearchFilter) ([]*Course, error) {
 // generated ID and timestamps populated. If a course with the same code
 // already exists in the school, a 409 APIError is returned.
 func (r *Repository) Create(c *Course) (*Course, error) {
-	if err := r.db.Create(c).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Create(c).Error
+	})
+	if err != nil {
 		var mysqlErr *mysql.MySQLError
 		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
 			return nil, &middleware.APIError{
@@ -164,20 +178,22 @@ func (r *Repository) Create(c *Course) (*Course, error) {
 // to prevent lost updates. Returns nil, nil when no row with that id exists.
 func (r *Repository) Update(id uint64, fields map[string]any) (*Course, error) {
 	var c Course
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&c, id).Error; err != nil {
-			return err
-		}
-		result := tx.Model(&c).Updates(fields)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
+	err := dbretry.Do(func() error {
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&c, id).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&c).Updates(fields)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return gorm.ErrRecordNotFound
+			}
+			return nil
+		})
 	})
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -198,9 +214,17 @@ func (r *Repository) Update(id uint64, fields map[string]any) (*Course, error) {
 // deleted, false if no matching row existed, and an error for any database
 // failure.
 func (r *Repository) Delete(id uint64) (bool, error) {
-	result := r.db.Delete(&Course{}, id)
-	if result.Error != nil {
-		return false, result.Error
+	var rowsAffected int64
+	err := dbretry.Do(func() error {
+		result := r.db.Delete(&Course{}, id)
+		if result.Error != nil {
+			return result.Error
+		}
+		rowsAffected = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-	return result.RowsAffected > 0, nil
+	return rowsAffected > 0, nil
 }

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"backend/internal/application/middleware"
+	"backend/internal/utilities/dbretry"
 )
 
 // School is the database model for a school entity. Each school is owned by a
@@ -43,12 +44,14 @@ func NewRepository(db *gorm.DB) *Repository {
 // exists. Any unexpected database error is returned as a non-nil error.
 func (r *Repository) FindByID(id uint64) (*School, error) {
 	var s School
-	result := r.db.First(&s, id)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.First(&s, id).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &s, nil
 }
@@ -57,7 +60,10 @@ func (r *Repository) FindByID(id uint64) (*School, error) {
 // nil) when no schools exist.
 func (r *Repository) FindAll() ([]*School, error) {
 	var schools []*School
-	if err := r.db.Find(&schools).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Find(&schools).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return schools, nil
@@ -77,7 +83,10 @@ func (r *Repository) Create(principalID uint64, name, address, city, country, ph
 		Email:       email,
 		Website:     website,
 	}
-	if err := r.db.Create(s).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Create(s).Error
+	})
+	if err != nil {
 		var mysqlErr *mysql.MySQLError
 		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
 			return nil, &middleware.APIError{
@@ -96,28 +105,30 @@ func (r *Repository) Create(principalID uint64, name, address, city, country, ph
 // prevent lost updates. Returns nil, nil when no row with that id exists.
 func (r *Repository) Update(id uint64, name, address, city, country, phone, email, website string) (*School, error) {
 	var s School
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&s, id).Error; err != nil {
-			return err
-		}
-		result := tx.Model(&s).Updates(map[string]any{
-			"name":    name,
-			"address": address,
-			"city":    city,
-			"country": country,
-			"phone":   phone,
-			"email":   email,
-			"website": website,
+	err := dbretry.Do(func() error {
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&s, id).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&s).Updates(map[string]any{
+				"name":    name,
+				"address": address,
+				"city":    city,
+				"country": country,
+				"phone":   phone,
+				"email":   email,
+				"website": website,
+			})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return gorm.ErrRecordNotFound
+			}
+			return nil
 		})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
 	})
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -138,7 +149,10 @@ func (r *Repository) Update(id uint64, name, address, city, country, phone, emai
 // Rows that do not exist are silently omitted from the result.
 func (r *Repository) FindByIDs(ids []uint64) ([]*School, error) {
 	var schools []*School
-	if err := r.db.Where("id IN ?", ids).Find(&schools).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Where("id IN ?", ids).Find(&schools).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return schools, nil
@@ -155,21 +169,24 @@ type SearchFilter struct {
 
 // Search returns schools matching all non-zero fields in the filter.
 func (r *Repository) Search(f SearchFilter) ([]*School, error) {
-	q := r.db.Model(&School{})
-	if f.Name != "" {
-		q = q.Where("name LIKE ?", "%"+f.Name+"%")
-	}
-	if f.City != "" {
-		q = q.Where("city = ?", f.City)
-	}
-	if f.Country != "" {
-		q = q.Where("country = ?", f.Country)
-	}
-	if f.PrincipalID != 0 {
-		q = q.Where("principal_id = ?", f.PrincipalID)
-	}
 	var schools []*School
-	if err := q.Find(&schools).Error; err != nil {
+	err := dbretry.Do(func() error {
+		q := r.db.Model(&School{})
+		if f.Name != "" {
+			q = q.Where("name LIKE ?", "%"+f.Name+"%")
+		}
+		if f.City != "" {
+			q = q.Where("city = ?", f.City)
+		}
+		if f.Country != "" {
+			q = q.Where("country = ?", f.Country)
+		}
+		if f.PrincipalID != 0 {
+			q = q.Where("principal_id = ?", f.PrincipalID)
+		}
+		return q.Find(&schools).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return schools, nil
@@ -179,9 +196,17 @@ func (r *Repository) Search(f SearchFilter) ([]*School, error) {
 // deleted, false if no matching row existed, and an error for any database
 // failure.
 func (r *Repository) Delete(id uint64) (bool, error) {
-	result := r.db.Delete(&School{}, id)
-	if result.Error != nil {
-		return false, result.Error
+	var rowsAffected int64
+	err := dbretry.Do(func() error {
+		result := r.db.Delete(&School{}, id)
+		if result.Error != nil {
+			return result.Error
+		}
+		rowsAffected = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-	return result.RowsAffected > 0, nil
+	return rowsAffected > 0, nil
 }
