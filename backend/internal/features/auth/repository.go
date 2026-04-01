@@ -8,6 +8,8 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"backend/internal/utilities/dbretry"
 )
 
 type Repository struct {
@@ -31,36 +33,42 @@ func NewRepository(db *gorm.DB) *Repository {
 
 func (r *Repository) FindByEmail(email string) (*User, error) {
 	var u User
-	result := r.db.Where("email = ?", email).First(&u)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.Where("email = ?", email).First(&u).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &u, nil
 }
 
 func (r *Repository) FindByGoogleID(googleID string) (*User, error) {
 	var u User
-	result := r.db.Where("google_id = ?", googleID).First(&u)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.Where("google_id = ?", googleID).First(&u).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &u, nil
 }
 
 func (r *Repository) FindByID(id uint64) (*User, error) {
 	var u User
-	result := r.db.First(&u, id)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.First(&u, id).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &u, nil
 }
@@ -131,12 +139,14 @@ func (r *Repository) FindOrCreateByMicrosoftID(microsoftID, email string) (*User
 
 func (r *Repository) FindByMicrosoftID(microsoftID string) (*User, error) {
 	var u User
-	result := r.db.Where("microsoft_id = ?", microsoftID).First(&u)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.Where("microsoft_id = ?", microsoftID).First(&u).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &u, nil
 }
@@ -146,18 +156,20 @@ func (r *Repository) FindByMicrosoftID(microsoftID string) (*User, error) {
 // google_id and issuing duplicate writes.
 func (r *Repository) linkGoogleID(userID uint64, googleID string) (*User, error) {
 	var u User
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
-			return err
-		}
-		if u.GoogleID != nil {
-			return nil // already linked — idempotent
-		}
-		if err := tx.Model(&u).Update("google_id", googleID).Error; err != nil {
-			return err
-		}
-		u.GoogleID = &googleID
-		return nil
+	err := dbretry.Do(func() error {
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
+				return err
+			}
+			if u.GoogleID != nil {
+				return nil // already linked — idempotent
+			}
+			if err := tx.Model(&u).Update("google_id", googleID).Error; err != nil {
+				return err
+			}
+			u.GoogleID = &googleID
+			return nil
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -168,18 +180,20 @@ func (r *Repository) linkGoogleID(userID uint64, googleID string) (*User, error)
 // linkMicrosoftID atomically sets microsoft_id on an existing user row.
 func (r *Repository) linkMicrosoftID(userID uint64, microsoftID string) (*User, error) {
 	var u User
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
-			return err
-		}
-		if u.MicrosoftID != nil {
-			return nil // already linked — idempotent
-		}
-		if err := tx.Model(&u).Update("microsoft_id", microsoftID).Error; err != nil {
-			return err
-		}
-		u.MicrosoftID = &microsoftID
-		return nil
+	err := dbretry.Do(func() error {
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&u, userID).Error; err != nil {
+				return err
+			}
+			if u.MicrosoftID != nil {
+				return nil // already linked — idempotent
+			}
+			if err := tx.Model(&u).Update("microsoft_id", microsoftID).Error; err != nil {
+				return err
+			}
+			u.MicrosoftID = &microsoftID
+			return nil
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -194,8 +208,11 @@ func (r *Repository) createWithMicrosoftID(email, microsoftID string) (*User, er
 		Role:         RolePending,
 		MicrosoftID:  &microsoftID,
 	}
-	if result := r.db.Create(u); result.Error != nil {
-		return nil, result.Error
+	err := dbretry.Do(func() error {
+		return r.db.Create(u).Error
+	})
+	if err != nil {
+		return nil, err
 	}
 	return u, nil
 }
@@ -207,18 +224,29 @@ func (r *Repository) createWithGoogleID(email, googleID string) (*User, error) {
 		Role:         RolePending,
 		GoogleID:     &googleID,
 	}
-	if result := r.db.Create(u); result.Error != nil {
-		return nil, result.Error
+	err := dbretry.Do(func() error {
+		return r.db.Create(u).Error
+	})
+	if err != nil {
+		return nil, err
 	}
 	return u, nil
 }
 
 func (r *Repository) UpdateRole(userID uint64, role string) (*User, error) {
-	result := r.db.Model(&User{}).Where("id = ?", userID).Update("role", role)
-	if result.Error != nil {
-		return nil, result.Error
+	var rowsAffected int64
+	err := dbretry.Do(func() error {
+		result := r.db.Model(&User{}).Where("id = ?", userID).Update("role", role)
+		if result.Error != nil {
+			return result.Error
+		}
+		rowsAffected = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if result.RowsAffected == 0 {
+	if rowsAffected == 0 {
 		return nil, fmt.Errorf("auth: UpdateRole: no rows affected for user %d", userID)
 	}
 	return r.FindByID(userID)
@@ -231,8 +259,11 @@ func (r *Repository) Create(email, passwordHash, role string, schoolID *uint64) 
 		Role:         role,
 		SchoolID:     schoolID,
 	}
-	if result := r.db.Create(u); result.Error != nil {
-		return nil, result.Error
+	err := dbretry.Do(func() error {
+		return r.db.Create(u).Error
+	})
+	if err != nil {
+		return nil, err
 	}
 	return u, nil
 }

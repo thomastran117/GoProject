@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"backend/internal/application/middleware"
+	"backend/internal/utilities/dbretry"
 )
 
 // Profile is the database model for a user profile. Each profile is linked
@@ -39,12 +40,14 @@ func NewRepository(db *gorm.DB) *Repository {
 // exists. Any unexpected database error is returned as a non-nil error.
 func (r *Repository) FindByID(id uint64) (*Profile, error) {
 	var p Profile
-	result := r.db.First(&p, id)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.First(&p, id).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &p, nil
 }
@@ -53,7 +56,10 @@ func (r *Repository) FindByID(id uint64) (*Profile, error) {
 // nil) when no profiles exist.
 func (r *Repository) FindAll() ([]*Profile, error) {
 	var profiles []*Profile
-	if err := r.db.Find(&profiles).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Find(&profiles).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return profiles, nil
@@ -64,7 +70,10 @@ func (r *Repository) FindAll() ([]*Profile, error) {
 // should compare lengths if exact matching is required.
 func (r *Repository) FindByIDs(ids []uint64) ([]*Profile, error) {
 	var profiles []*Profile
-	if err := r.db.Where("id IN ?", ids).Find(&profiles).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Where("id IN ?", ids).Find(&profiles).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return profiles, nil
@@ -81,7 +90,10 @@ func (r *Repository) Create(userID uint64, username, avatarURL string) (*Profile
 		Username:  username,
 		AvatarURL: avatarURL,
 	}
-	if err := r.db.Create(p).Error; err != nil {
+	err := dbretry.Do(func() error {
+		return r.db.Create(p).Error
+	})
+	if err != nil {
 		var mysqlErr *mysql.MySQLError
 		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
 			return nil, &middleware.APIError{
@@ -103,23 +115,25 @@ func (r *Repository) Create(userID uint64, username, avatarURL string) (*Profile
 // row with that id exists.
 func (r *Repository) Update(id uint64, username, avatarURL string) (*Profile, error) {
 	var p Profile
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&p, id).Error; err != nil {
-			return err
-		}
-		result := tx.Model(&p).Updates(map[string]any{
-			"username":   username,
-			"avatar_url": avatarURL,
+	err := dbretry.Do(func() error {
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&p, id).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&p).Updates(map[string]any{
+				"username":   username,
+				"avatar_url": avatarURL,
+			})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return gorm.ErrRecordNotFound
+			}
+			return nil
 		})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
 	})
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -132,9 +146,17 @@ func (r *Repository) Update(id uint64, username, avatarURL string) (*Profile, er
 // deleted, false if no matching row existed, and an error for any database
 // failure.
 func (r *Repository) Delete(id uint64) (bool, error) {
-	result := r.db.Delete(&Profile{}, id)
-	if result.Error != nil {
-		return false, result.Error
+	var rowsAffected int64
+	err := dbretry.Do(func() error {
+		result := r.db.Delete(&Profile{}, id)
+		if result.Error != nil {
+			return result.Error
+		}
+		rowsAffected = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-	return result.RowsAffected > 0, nil
+	return rowsAffected > 0, nil
 }

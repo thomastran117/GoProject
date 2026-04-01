@@ -3,9 +3,12 @@ package device
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
+
+	"backend/internal/utilities/dbretry"
 )
 
 // Device represents a known device for a user, identified by a SHA-256 hash of
@@ -49,12 +52,14 @@ func Fingerprint(userAgent string) string {
 // fingerprint, or nil if no such device exists.
 func (r *Repository) FindByUserAndFingerprint(userID uint64, fingerprint string) (*Device, error) {
 	var d Device
-	result := r.db.Where("user_id = ? AND fingerprint = ?", userID, fingerprint).First(&d)
-	if result.Error == gorm.ErrRecordNotFound {
+	err := dbretry.Do(func() error {
+		return r.db.Where("user_id = ? AND fingerprint = ?", userID, fingerprint).First(&d).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
-	if result.Error != nil {
-		return nil, result.Error
+	if err != nil {
+		return nil, err
 	}
 	return &d, nil
 }
@@ -69,13 +74,18 @@ func (r *Repository) Create(userID uint64, fingerprint, deviceType, userAgent st
 		UserAgent:   userAgent,
 		LastSeenAt:  now,
 	}
-	if result := r.db.Create(d); result.Error != nil {
-		return nil, result.Error
+	err := dbretry.Do(func() error {
+		return r.db.Create(d).Error
+	})
+	if err != nil {
+		return nil, err
 	}
 	return d, nil
 }
 
 // UpdateLastSeen sets LastSeenAt to now for the given device ID.
 func (r *Repository) UpdateLastSeen(id uint64) error {
-	return r.db.Model(&Device{}).Where("id = ?", id).Update("last_seen_at", time.Now()).Error
+	return dbretry.Do(func() error {
+		return r.db.Model(&Device{}).Where("id = ?", id).Update("last_seen_at", time.Now()).Error
+	})
 }
