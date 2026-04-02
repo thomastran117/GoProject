@@ -11,6 +11,7 @@ import (
 	"backend/internal/external/blob"
 	"backend/internal/external/email"
 	"backend/internal/features/announcement"
+	"backend/internal/features/assignment"
 	"backend/internal/features/auth"
 	"backend/internal/features/cache"
 	"backend/internal/features/course"
@@ -53,7 +54,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -117,6 +118,18 @@ func MountRoutes() *gin.Engine {
 	announcementService := announcement.NewService(announcementRepo, findCourseFn)
 	announcementHandler := announcement.NewHandler(announcementService)
 
+	findCourseForAssignmentFn := func(ctx context.Context, id uint64) (*assignment.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &assignment.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+
+	assignmentRepo := assignment.NewRepository(database.DB)
+	assignmentService := assignment.NewService(assignmentRepo, findCourseForAssignmentFn)
+	assignmentHandler := assignment.NewHandler(assignmentService)
+
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
 	}
@@ -136,6 +149,7 @@ func MountRoutes() *gin.Engine {
 	school.MountSchoolRoutes(api, schoolHandler)
 	course.MountCourseRoutes(api, courseHandler)
 	announcement.MountAnnouncementRoutes(api, announcementHandler)
+	assignment.MountAssignmentRoutes(api, assignmentHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
