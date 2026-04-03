@@ -8,6 +8,7 @@ import (
 
 	"backend/internal/application/middleware"
 	"backend/internal/application/request"
+	"backend/internal/features/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,7 +19,7 @@ type assignmentService interface {
 	GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AssignmentResponse, error)
 	Update(ctx context.Context, id, callerUserID uint64, callerRole string, p UpdateParams) (*AssignmentResponse, error)
 	Delete(ctx context.Context, id, callerUserID uint64, callerRole string) error
-	Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error)
+	Search(ctx context.Context, callerUserID uint64, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error)
 }
 
 type createAssignmentRequest struct {
@@ -189,6 +190,13 @@ func (h *Handler) handleSearch(c *gin.Context) {
 		})
 		return
 	}
+	if claims.Role != auth.RoleAdmin {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "FORBIDDEN", "message": "Only admins can access the global assignments list"},
+		})
+		return
+	}
 
 	var f SearchFilter
 	f.Title = c.Query("title")
@@ -207,7 +215,7 @@ func (h *Handler) handleSearch(c *gin.Context) {
 	f.AuthorID = authorID
 
 	page, pageSize := parsePagination(c)
-	result, err := h.service.Search(c.Request.Context(), claims.Role, f, page, pageSize)
+	result, err := h.service.Search(c.Request.Context(), claims.UserID, claims.Role, f, page, pageSize)
 	if err != nil {
 		c.Error(err)
 		return

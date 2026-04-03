@@ -77,11 +77,12 @@ func (r *Repository) FindByCourse(courseID uint64, p Page) ([]*Lecture, int64, e
 	var lectures []*Lecture
 	var total int64
 	err := dbretry.Do(func() error {
-		q := r.db.Model(&Lecture{}).Where("course_id = ?", courseID)
-		if err := q.Count(&total).Error; err != nil {
+		base := r.db.Model(&Lecture{}).Where("course_id = ?", courseID)
+		if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 			return err
 		}
-		return q.Order("created_at ASC").
+		return base.Session(&gorm.Session{}).
+			Order("created_at ASC").
 			Limit(p.Size).
 			Offset((p.Number - 1) * p.Size).
 			Find(&lectures).Error
@@ -98,20 +99,21 @@ func (r *Repository) Search(f SearchFilter, p Page) ([]*Lecture, int64, error) {
 	var lectures []*Lecture
 	var total int64
 	err := dbretry.Do(func() error {
-		q := r.db.Model(&Lecture{})
+		base := r.db.Model(&Lecture{})
 		if f.Title != "" {
-			q = q.Where("title LIKE ?", "%"+f.Title+"%")
+			base = base.Where("title LIKE ?", "%"+f.Title+"%")
 		}
 		if f.CourseID != 0 {
-			q = q.Where("course_id = ?", f.CourseID)
+			base = base.Where("course_id = ?", f.CourseID)
 		}
 		if f.AuthorID != 0 {
-			q = q.Where("author_id = ?", f.AuthorID)
+			base = base.Where("author_id = ?", f.AuthorID)
 		}
-		if err := q.Count(&total).Error; err != nil {
+		if err := base.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 			return err
 		}
-		return q.Order("created_at DESC").
+		return base.Session(&gorm.Session{}).
+			Order("created_at DESC").
 			Limit(p.Size).
 			Offset((p.Number - 1) * p.Size).
 			Find(&lectures).Error

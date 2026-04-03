@@ -8,6 +8,7 @@ import (
 
 	"backend/internal/application/middleware"
 	"backend/internal/features/auth"
+	"backend/internal/utilities/logger"
 )
 
 // CourseInfo carries the minimal course data needed for ownership checks
@@ -128,18 +129,16 @@ func toResponse(l *Lecture, isViewed bool) *LectureResponse {
 	}
 }
 
-func toResponses(rows []*Lecture) []*LectureResponse {
-	out := make([]*LectureResponse, len(rows))
-	for i, l := range rows {
-		out[i] = toResponse(l, false)
-	}
-	return out
-}
 
 // checkReadAccess returns a FORBIDDEN error if the caller is not the course
 // teacher, an admin, or actively enrolled in the course.
+// course may be nil (e.g. data inconsistency); a nil course is treated as
+// "caller is not the teacher" and falls through to the enrollment check.
 func (s *Service) checkReadAccess(ctx context.Context, courseID, callerUserID uint64, callerRole string, course *CourseInfo) error {
-	if callerRole == auth.RoleAdmin || course.TeacherID == callerUserID {
+	if callerRole == auth.RoleAdmin {
+		return nil
+	}
+	if course != nil && course.TeacherID == callerUserID {
 		return nil
 	}
 	enrolled, err := s.isEnrolled(ctx, courseID, callerUserID)
@@ -254,12 +253,19 @@ func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole s
 		if err != nil {
 			return nil, err
 		}
+		if course == nil {
+			return nil, &middleware.APIError{
+				Status:  http.StatusForbidden,
+				Code:    "FORBIDDEN",
+				Message: "You must be enrolled in this course to view its lectures",
+			}
+		}
 		if err := s.checkReadAccess(ctx, l.CourseID, callerUserID, callerRole, course); err != nil {
 			return nil, err
 		}
 	}
 	if err := s.repo.MarkViewed(callerUserID, l.ID); err != nil {
-		_ = err // non-fatal: don't block the user from reading
+		logger.Warn("lecture: failed to record view for user %d lecture %d: %v", callerUserID, l.ID, err)
 	}
 	return toResponse(l, true), nil
 }
@@ -329,7 +335,7 @@ func (s *Service) Delete(ctx context.Context, id, callerUserID uint64, callerRol
 
 // Search returns a paginated, filterable list of all lectures across all courses.
 // Restricted to admins.
-func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
+func (s *Service) Search(ctx context.Context, callerUserID uint64, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
 	if callerRole != auth.RoleAdmin {
 		return nil, &middleware.APIError{
 			Status:  http.StatusForbidden,
@@ -342,8 +348,20 @@ func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter,
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uint64, len(rows))
+	for i, l := range rows {
+		ids[i] = l.ID
+	}
+	viewedSet, err := s.repo.FindViewedIDs(callerUserID, ids)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]*LectureResponse, len(rows))
+	for i, l := range rows {
+		data[i] = toResponse(l, viewedSet[l.ID])
+	}
 	return &PagedResult{
-		Data:       toResponses(rows),
+		Data:       data,
 		Pagination: buildPaginationMeta(page, pageSize, total),
 	}, nil
 }

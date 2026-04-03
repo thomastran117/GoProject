@@ -8,6 +8,7 @@ import (
 
 	"backend/internal/application/middleware"
 	"backend/internal/features/auth"
+	"backend/internal/utilities/logger"
 )
 
 // CourseInfo carries the minimal course data needed for ownership checks
@@ -164,13 +165,6 @@ func toResponse(a *Assignment, isViewed bool) *AssignmentResponse {
 	}
 }
 
-func toResponses(rows []*Assignment) []*AssignmentResponse {
-	out := make([]*AssignmentResponse, len(rows))
-	for i, a := range rows {
-		out[i] = toResponse(a, false)
-	}
-	return out
-}
 
 // --- Service methods ---
 
@@ -303,7 +297,7 @@ func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole s
 		}
 	}
 	if err := s.repo.MarkViewed(callerUserID, a.ID); err != nil {
-		_ = err // non-fatal: don't block the user from reading
+		logger.Warn("assignment: failed to record view for user %d assignment %d: %v", callerUserID, a.ID, err)
 	}
 	return toResponse(a, true), nil
 }
@@ -382,7 +376,7 @@ func (s *Service) Delete(ctx context.Context, id, callerUserID uint64, callerRol
 
 // Search returns a paginated, filterable list of all assignments across all
 // courses. Restricted to admins.
-func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
+func (s *Service) Search(ctx context.Context, callerUserID uint64, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
 	if callerRole != auth.RoleAdmin {
 		return nil, &middleware.APIError{
 			Status:  http.StatusForbidden,
@@ -395,8 +389,20 @@ func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter,
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uint64, len(rows))
+	for i, a := range rows {
+		ids[i] = a.ID
+	}
+	viewedSet, err := s.repo.FindViewedIDs(callerUserID, ids)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]*AssignmentResponse, len(rows))
+	for i, a := range rows {
+		data[i] = toResponse(a, viewedSet[a.ID])
+	}
 	return &PagedResult{
-		Data:       toResponses(rows),
+		Data:       data,
 		Pagination: buildPaginationMeta(page, pageSize, total),
 	}, nil
 }
