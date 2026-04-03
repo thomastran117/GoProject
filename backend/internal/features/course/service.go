@@ -31,6 +31,7 @@ type CourseResponse struct {
 	MaxEnrollment uint       `json:"max_enrollment"`
 	Credits       uint       `json:"credits"`
 	Status        string     `json:"status"`
+	Visibility    string     `json:"visibility"`
 	StartDate     *time.Time `json:"start_date"`
 	EndDate       *time.Time `json:"end_date"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -52,6 +53,7 @@ type CreateParams struct {
 	MaxEnrollment uint
 	Credits       uint
 	Status        string
+	Visibility    string
 	StartDate     *time.Time
 	EndDate       *time.Time
 }
@@ -71,6 +73,7 @@ type UpdateParams struct {
 	MaxEnrollment uint
 	Credits       uint
 	Status        string
+	Visibility    string
 	StartDate     *time.Time
 	EndDate       *time.Time
 }
@@ -79,6 +82,11 @@ var validStatuses = map[string]bool{
 	"active":   true,
 	"inactive": true,
 	"archived": true,
+}
+
+var validVisibilities = map[string]bool{
+	"public":  true,
+	"private": true,
 }
 
 type courseRepository interface {
@@ -162,6 +170,13 @@ func (s *Service) Create(ctx context.Context, callerUserID uint64, callerRole st
 		return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "Status must be one of: active, inactive, archived"}
 	}
 
+	if p.Visibility == "" {
+		p.Visibility = "public"
+	}
+	if !validVisibilities[p.Visibility] {
+		return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_VISIBILITY", Message: "Visibility must be one of: public, private"}
+	}
+
 	school, err := s.findSchool(ctx, p.SchoolID)
 	if err != nil {
 		return nil, err
@@ -195,6 +210,7 @@ func (s *Service) Create(ctx context.Context, callerUserID uint64, callerRole st
 		MaxEnrollment: p.MaxEnrollment,
 		Credits:       p.Credits,
 		Status:        p.Status,
+		Visibility:    p.Visibility,
 		StartDate:     p.StartDate,
 		EndDate:       p.EndDate,
 	}
@@ -237,6 +253,13 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 		return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "Status must be one of: active, inactive, archived"}
 	}
 
+	if p.Visibility == "" {
+		p.Visibility = "public"
+	}
+	if !validVisibilities[p.Visibility] {
+		return nil, &middleware.APIError{Status: http.StatusBadRequest, Code: "INVALID_VISIBILITY", Message: "Visibility must be one of: public, private"}
+	}
+
 	if p.TeacherID != existing.TeacherID {
 		ok, err := s.teacherExists(ctx, p.TeacherID)
 		if err != nil {
@@ -270,6 +293,7 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 		"max_enrollment": p.MaxEnrollment,
 		"credits":        p.Credits,
 		"status":         p.Status,
+		"visibility":     p.Visibility,
 		"start_date":     p.StartDate,
 		"end_date":       p.EndDate,
 	}
@@ -333,6 +357,7 @@ func toResponse(c *Course) *CourseResponse {
 		MaxEnrollment: c.MaxEnrollment,
 		Credits:       c.Credits,
 		Status:        c.Status,
+		Visibility:    c.Visibility,
 		StartDate:     c.StartDate,
 		EndDate:       c.EndDate,
 		CreatedAt:     c.CreatedAt,

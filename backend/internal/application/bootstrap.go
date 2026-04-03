@@ -16,6 +16,7 @@ import (
 	"backend/internal/features/cache"
 	"backend/internal/features/course"
 	"backend/internal/features/device"
+	"backend/internal/features/enrollment"
 	"backend/internal/features/health"
 	"backend/internal/features/profile"
 	"backend/internal/features/school"
@@ -54,7 +55,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}, &enrollment.Enrollment{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -130,6 +131,23 @@ func MountRoutes() *gin.Engine {
 	assignmentService := assignment.NewService(assignmentRepo, findCourseForAssignmentFn)
 	assignmentHandler := assignment.NewHandler(assignmentService)
 
+	findCourseForEnrollmentFn := func(ctx context.Context, id uint64) (*enrollment.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &enrollment.CourseInfo{TeacherID: c.TeacherID, Visibility: c.Visibility, MaxEnrollment: c.MaxEnrollment}, nil
+	}
+
+	userExistsFn := func(ctx context.Context, id uint64) (bool, error) {
+		u, err := authRepo.FindByID(id)
+		return u != nil, err
+	}
+
+	enrollmentRepo := enrollment.NewRepository(database.DB, configredis.Client)
+	enrollmentService := enrollment.NewService(enrollmentRepo, findCourseForEnrollmentFn, userExistsFn)
+	enrollmentHandler := enrollment.NewHandler(enrollmentService)
+
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
 	}
@@ -150,6 +168,7 @@ func MountRoutes() *gin.Engine {
 	course.MountCourseRoutes(api, courseHandler)
 	announcement.MountAnnouncementRoutes(api, announcementHandler)
 	assignment.MountAssignmentRoutes(api, assignmentHandler)
+	enrollment.MountEnrollmentRoutes(api, enrollmentHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)

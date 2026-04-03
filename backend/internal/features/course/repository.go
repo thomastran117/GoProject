@@ -30,6 +30,7 @@ type Course struct {
 	MaxEnrollment uint
 	Credits       uint
 	Status        string     `gorm:"size:20;not null;default:'active'"`
+	Visibility    string     `gorm:"size:10;not null;default:'public'"`
 	StartDate     *time.Time
 	EndDate       *time.Time
 	CreatedAt     time.Time
