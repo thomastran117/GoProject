@@ -35,6 +35,7 @@ type createCourseRequest struct {
 	MaxEnrollment uint       `json:"max_enrollment"`
 	Credits       uint       `json:"credits"`
 	Status        string     `json:"status"         binding:"omitempty,max=20"`
+	Visibility    string     `json:"visibility"     binding:"omitempty,max=10"`
 	StartDate     *time.Time `json:"start_date"`
 	EndDate       *time.Time `json:"end_date"`
 }
@@ -52,6 +53,7 @@ type updateCourseRequest struct {
 	MaxEnrollment uint       `json:"max_enrollment"`
 	Credits       uint       `json:"credits"`
 	Status        string     `json:"status"         binding:"required,max=20"`
+	Visibility    string     `json:"visibility"     binding:"omitempty,max=10"`
 	StartDate     *time.Time `json:"start_date"`
 	EndDate       *time.Time `json:"end_date"`
 }
@@ -171,6 +173,7 @@ func (h *Handler) handleCreate(c *gin.Context) {
 		MaxEnrollment: req.MaxEnrollment,
 		Credits:       req.Credits,
 		Status:        req.Status,
+		Visibility:    req.Visibility,
 		StartDate:     req.StartDate,
 		EndDate:       req.EndDate,
 	}
@@ -216,6 +219,7 @@ func (h *Handler) handleUpdate(c *gin.Context) {
 		MaxEnrollment: req.MaxEnrollment,
 		Credits:       req.Credits,
 		Status:        req.Status,
+		Visibility:    req.Visibility,
 		StartDate:     req.StartDate,
 		EndDate:       req.EndDate,
 	}
