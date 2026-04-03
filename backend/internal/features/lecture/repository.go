@@ -21,6 +21,15 @@ type Lecture struct {
 	UpdatedAt time.Time
 }
 
+// LectureView records that a user has viewed a specific lecture.
+// The unique index on (user_id, lecture_id) ensures at-most-one row per pair.
+type LectureView struct {
+	ID        uint64    `gorm:"primaryKey;autoIncrement"`
+	UserID    uint64    `gorm:"index:idx_lecture_view_user_lecture,unique;not null"`
+	LectureID uint64    `gorm:"index:idx_lecture_view_user_lecture,unique;not null"`
+	ViewedAt  time.Time `gorm:"not null"`
+}
+
 // Repository wraps the GORM database connection and provides all persistence
 // operations for the Lecture model.
 type Repository struct {
@@ -143,6 +152,37 @@ func (r *Repository) Update(id uint64, fields map[string]any) (*Lecture, error) 
 		return nil, err
 	}
 	return r.FindByID(id)
+}
+
+// MarkViewed records that userID has viewed lectureID.
+// If a row already exists the insert is silently ignored (idempotent).
+func (r *Repository) MarkViewed(userID, lectureID uint64) error {
+	return dbretry.Do(func() error {
+		return r.db.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&LectureView{UserID: userID, LectureID: lectureID, ViewedAt: time.Now()}).Error
+	})
+}
+
+// FindViewedIDs returns a set of lecture IDs (from the provided ids slice)
+// that userID has already viewed.
+func (r *Repository) FindViewedIDs(userID uint64, ids []uint64) (map[uint64]bool, error) {
+	result := make(map[uint64]bool)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var viewedIDs []uint64
+	err := dbretry.Do(func() error {
+		return r.db.Model(&LectureView{}).
+			Where("user_id = ? AND lecture_id IN ?", userID, ids).
+			Pluck("lecture_id", &viewedIDs).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range viewedIDs {
+		result[id] = true
+	}
+	return result, nil
 }
 
 // Delete removes the lecture row with the given id. Returns true if a row

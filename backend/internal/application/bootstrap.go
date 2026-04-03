@@ -56,7 +56,18 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}, &enrollment.Enrollment{}, &lecture.Lecture{}); err != nil {
+	if err := database.DB.AutoMigrate(
+		&profile.Profile{},
+		&school.School{},
+		&course.Course{},
+		&device.Device{},
+		&announcement.Announcement{},
+		&assignment.Assignment{},
+		&assignment.AssignmentView{},
+		&enrollment.Enrollment{},
+		&lecture.Lecture{},
+		&lecture.LectureView{},
+	); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 

@@ -25,6 +25,8 @@ type assignmentRepository interface {
 	Create(a *Assignment) (*Assignment, error)
 	Update(id uint64, fields map[string]any) (*Assignment, error)
 	Delete(id uint64) (bool, error)
+	MarkViewed(userID, assignmentID uint64) error
+	FindViewedIDs(userID uint64, ids []uint64) (map[uint64]bool, error)
 }
 
 // Service implements the business logic for assignments.
@@ -61,6 +63,7 @@ type AssignmentResponse struct {
 	Status      string     `json:"status"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	IsViewed    bool       `json:"is_viewed"`
 }
 
 // PaginationMeta holds the pagination metadata included in list responses.
@@ -145,7 +148,7 @@ func buildPaginationMeta(page, pageSize int, total int64) PaginationMeta {
 	}
 }
 
-func toResponse(a *Assignment) *AssignmentResponse {
+func toResponse(a *Assignment, isViewed bool) *AssignmentResponse {
 	return &AssignmentResponse{
 		ID:          a.ID,
 		CourseID:    a.CourseID,
@@ -157,13 +160,14 @@ func toResponse(a *Assignment) *AssignmentResponse {
 		Status:      a.Status,
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
+		IsViewed:    isViewed,
 	}
 }
 
 func toResponses(rows []*Assignment) []*AssignmentResponse {
 	out := make([]*AssignmentResponse, len(rows))
 	for i, a := range rows {
-		out[i] = toResponse(a)
+		out[i] = toResponse(a, false)
 	}
 	return out
 }
@@ -212,7 +216,7 @@ func (s *Service) Create(ctx context.Context, callerUserID uint64, callerRole st
 	if err != nil {
 		return nil, err
 	}
-	return toResponse(created), nil
+	return toResponse(created, false), nil
 }
 
 // GetByCourse returns a paginated list of assignments for the given course.
@@ -247,8 +251,20 @@ func (s *Service) GetByCourse(ctx context.Context, callerUserID uint64, callerRo
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uint64, len(rows))
+	for i, a := range rows {
+		ids[i] = a.ID
+	}
+	viewedSet, err := s.repo.FindViewedIDs(callerUserID, ids)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]*AssignmentResponse, len(rows))
+	for i, a := range rows {
+		data[i] = toResponse(a, viewedSet[a.ID])
+	}
 	return &PagedResult{
-		Data:       toResponses(rows),
+		Data:       data,
 		Pagination: buildPaginationMeta(page, pageSize, total),
 	}, nil
 }
@@ -286,7 +302,10 @@ func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole s
 			}
 		}
 	}
-	return toResponse(a), nil
+	if err := s.repo.MarkViewed(callerUserID, a.ID); err != nil {
+		_ = err // non-fatal: don't block the user from reading
+	}
+	return toResponse(a, true), nil
 }
 
 // Update modifies an existing assignment. The caller must be the original
@@ -334,7 +353,7 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 			Message: "Assignment not found",
 		}
 	}
-	return toResponse(updated), nil
+	return toResponse(updated, false), nil
 }
 
 // Delete removes an assignment. The caller must be the original author or an admin.
