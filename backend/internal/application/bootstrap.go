@@ -18,6 +18,7 @@ import (
 	"backend/internal/features/device"
 	"backend/internal/features/enrollment"
 	"backend/internal/features/health"
+	"backend/internal/features/lecture"
 	"backend/internal/features/profile"
 	"backend/internal/features/school"
 	"backend/internal/features/token"
@@ -55,7 +56,7 @@ func MountRoutes() *gin.Engine {
 	cacheService := cache.NewService(configredis.Client)
 	token.Init(env.JWTSecret, cacheService)
 
-	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}, &enrollment.Enrollment{}); err != nil {
+	if err := database.DB.AutoMigrate(&profile.Profile{}, &school.School{}, &course.Course{}, &device.Device{}, &announcement.Announcement{}, &assignment.Assignment{}, &enrollment.Enrollment{}, &lecture.Lecture{}); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
 
@@ -107,30 +108,6 @@ func MountRoutes() *gin.Engine {
 	courseService := course.NewService(courseRepo, schoolExistsFn, teacherExistsFn, findSchoolFn)
 	courseHandler := course.NewHandler(courseService)
 
-	findCourseFn := func(ctx context.Context, id uint64) (*announcement.CourseInfo, error) {
-		c, err := courseRepo.FindByID(id)
-		if err != nil || c == nil {
-			return nil, err
-		}
-		return &announcement.CourseInfo{TeacherID: c.TeacherID}, nil
-	}
-
-	announcementRepo := announcement.NewRepository(database.DB)
-	announcementService := announcement.NewService(announcementRepo, findCourseFn)
-	announcementHandler := announcement.NewHandler(announcementService)
-
-	findCourseForAssignmentFn := func(ctx context.Context, id uint64) (*assignment.CourseInfo, error) {
-		c, err := courseRepo.FindByID(id)
-		if err != nil || c == nil {
-			return nil, err
-		}
-		return &assignment.CourseInfo{TeacherID: c.TeacherID}, nil
-	}
-
-	assignmentRepo := assignment.NewRepository(database.DB)
-	assignmentService := assignment.NewService(assignmentRepo, findCourseForAssignmentFn)
-	assignmentHandler := assignment.NewHandler(assignmentService)
-
 	findCourseForEnrollmentFn := func(ctx context.Context, id uint64) (*enrollment.CourseInfo, error) {
 		c, err := courseRepo.FindByID(id)
 		if err != nil || c == nil {
@@ -147,6 +124,50 @@ func MountRoutes() *gin.Engine {
 	enrollmentRepo := enrollment.NewRepository(database.DB, configredis.Client)
 	enrollmentService := enrollment.NewService(enrollmentRepo, findCourseForEnrollmentFn, userExistsFn)
 	enrollmentHandler := enrollment.NewHandler(enrollmentService)
+
+	isEnrolledFn := func(ctx context.Context, courseID, userID uint64) (bool, error) {
+		e, err := enrollmentRepo.FindEnrollment(courseID, userID)
+		if err != nil {
+			return false, err
+		}
+		return e != nil && e.Status == "active", nil
+	}
+
+	findCourseFn := func(ctx context.Context, id uint64) (*announcement.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &announcement.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+
+	announcementRepo := announcement.NewRepository(database.DB)
+	announcementService := announcement.NewService(announcementRepo, findCourseFn, isEnrolledFn)
+	announcementHandler := announcement.NewHandler(announcementService)
+
+	findCourseForAssignmentFn := func(ctx context.Context, id uint64) (*assignment.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &assignment.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+
+	assignmentRepo := assignment.NewRepository(database.DB)
+	assignmentService := assignment.NewService(assignmentRepo, findCourseForAssignmentFn, isEnrolledFn)
+	assignmentHandler := assignment.NewHandler(assignmentService)
+
+	findCourseForLectureFn := func(ctx context.Context, id uint64) (*lecture.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &lecture.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+
+	lectureRepo := lecture.NewRepository(database.DB)
+	lectureService := lecture.NewService(lectureRepo, findCourseForLectureFn, isEnrolledFn)
+	lectureHandler := lecture.NewHandler(lectureService)
 
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
@@ -168,6 +189,7 @@ func MountRoutes() *gin.Engine {
 	course.MountCourseRoutes(api, courseHandler)
 	announcement.MountAnnouncementRoutes(api, announcementHandler)
 	assignment.MountAssignmentRoutes(api, assignmentHandler)
+	lecture.MountLectureRoutes(api, lectureHandler)
 	enrollment.MountEnrollmentRoutes(api, enrollmentHandler)
 
 	if env.HasAzureBlob() {

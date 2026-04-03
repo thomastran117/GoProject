@@ -31,16 +31,19 @@ type assignmentRepository interface {
 type Service struct {
 	repo       assignmentRepository
 	findCourse func(ctx context.Context, id uint64) (*CourseInfo, error)
+	isEnrolled func(ctx context.Context, courseID, userID uint64) (bool, error)
 }
 
 // NewService creates a Service wired to the given repository and course lookup
 // function. findCourse is injected to avoid a circular import with the course
 // package; it should return nil, nil when the course does not exist.
+// isEnrolled is injected to avoid a circular import with the enrollment package.
 func NewService(
 	repo *Repository,
 	findCourse func(ctx context.Context, id uint64) (*CourseInfo, error),
+	isEnrolled func(ctx context.Context, courseID, userID uint64) (bool, error),
 ) *Service {
-	return &Service{repo: repo, findCourse: findCourse}
+	return &Service{repo: repo, findCourse: findCourse, isEnrolled: isEnrolled}
 }
 
 // --- DTOs ---
@@ -213,8 +216,32 @@ func (s *Service) Create(ctx context.Context, callerUserID uint64, callerRole st
 }
 
 // GetByCourse returns a paginated list of assignments for the given course.
-// Any authenticated user may call this.
-func (s *Service) GetByCourse(ctx context.Context, courseID uint64, page, pageSize int) (*PagedResult, error) {
+// The caller must be enrolled in the course, the course teacher, or an admin.
+func (s *Service) GetByCourse(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, page, pageSize int) (*PagedResult, error) {
+	course, err := s.findCourse(ctx, courseID)
+	if err != nil {
+		return nil, err
+	}
+	if course == nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusNotFound,
+			Code:    "COURSE_NOT_FOUND",
+			Message: "Course not found",
+		}
+	}
+	if callerRole != auth.RoleAdmin && course.TeacherID != callerUserID {
+		enrolled, err := s.isEnrolled(ctx, courseID, callerUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !enrolled {
+			return nil, &middleware.APIError{
+				Status:  http.StatusForbidden,
+				Code:    "FORBIDDEN",
+				Message: "You must be enrolled in this course to view its assignments",
+			}
+		}
+	}
 	page, pageSize = clampPage(page, pageSize)
 	rows, total, err := s.repo.FindByCourse(courseID, Page{Number: page, Size: pageSize})
 	if err != nil {
@@ -226,9 +253,9 @@ func (s *Service) GetByCourse(ctx context.Context, courseID uint64, page, pageSi
 	}, nil
 }
 
-// GetByID returns the assignment with the given ID. Any authenticated user may
-// call this.
-func (s *Service) GetByID(ctx context.Context, id uint64) (*AssignmentResponse, error) {
+// GetByID returns the assignment with the given ID.
+// The caller must be enrolled in the assignment's course, the course teacher, or an admin.
+func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AssignmentResponse, error) {
 	a, err := s.repo.FindByID(id)
 	if err != nil {
 		return nil, err
@@ -238,6 +265,25 @@ func (s *Service) GetByID(ctx context.Context, id uint64) (*AssignmentResponse, 
 			Status:  http.StatusNotFound,
 			Code:    "ASSIGNMENT_NOT_FOUND",
 			Message: "Assignment not found",
+		}
+	}
+	if callerRole != auth.RoleAdmin {
+		course, err := s.findCourse(ctx, a.CourseID)
+		if err != nil {
+			return nil, err
+		}
+		if course == nil || course.TeacherID != callerUserID {
+			enrolled, err := s.isEnrolled(ctx, a.CourseID, callerUserID)
+			if err != nil {
+				return nil, err
+			}
+			if !enrolled {
+				return nil, &middleware.APIError{
+					Status:  http.StatusForbidden,
+					Code:    "FORBIDDEN",
+					Message: "You must be enrolled in this course to view its assignments",
+				}
+			}
 		}
 	}
 	return toResponse(a), nil

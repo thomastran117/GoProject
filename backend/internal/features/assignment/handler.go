@@ -14,8 +14,8 @@ import (
 
 type assignmentService interface {
 	Create(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, p CreateParams) (*AssignmentResponse, error)
-	GetByCourse(ctx context.Context, courseID uint64, page, pageSize int) (*PagedResult, error)
-	GetByID(ctx context.Context, id uint64) (*AssignmentResponse, error)
+	GetByCourse(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, page, pageSize int) (*PagedResult, error)
+	GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AssignmentResponse, error)
 	Update(ctx context.Context, id, callerUserID uint64, callerRole string, p UpdateParams) (*AssignmentResponse, error)
 	Delete(ctx context.Context, id, callerUserID uint64, callerRole string) error
 	Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error)
@@ -86,8 +86,16 @@ func (h *Handler) handleGetByCourse(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
+		})
+		return
+	}
 	page, pageSize := parsePagination(c)
-	result, err := h.service.GetByCourse(c.Request.Context(), courseID, page, pageSize)
+	result, err := h.service.GetByCourse(c.Request.Context(), claims.UserID, claims.Role, courseID, page, pageSize)
 	if err != nil {
 		c.Error(err)
 		return
@@ -101,7 +109,15 @@ func (h *Handler) handleGet(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	result, err := h.service.GetByID(c.Request.Context(), id)
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
+		})
+		return
+	}
+	result, err := h.service.GetByID(c.Request.Context(), claims.UserID, claims.Role, id)
 	if err != nil {
 		c.Error(err)
 		return
