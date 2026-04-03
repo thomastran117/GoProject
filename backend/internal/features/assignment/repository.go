@@ -26,6 +26,15 @@ type Assignment struct {
 	UpdatedAt   time.Time
 }
 
+// AssignmentView records that a user has viewed a specific assignment.
+// The unique index on (user_id, assignment_id) ensures at-most-one row per pair.
+type AssignmentView struct {
+	ID           uint64    `gorm:"primaryKey;autoIncrement"`
+	UserID       uint64    `gorm:"index:idx_assignment_view_user_assignment,unique;not null"`
+	AssignmentID uint64    `gorm:"index:idx_assignment_view_user_assignment,unique;not null"`
+	ViewedAt     time.Time `gorm:"not null"`
+}
+
 // Repository wraps the GORM database connection and provides all persistence
 // operations for the Assignment model.
 type Repository struct {
@@ -154,6 +163,37 @@ func (r *Repository) Update(id uint64, fields map[string]any) (*Assignment, erro
 		return nil, err
 	}
 	return r.FindByID(id)
+}
+
+// MarkViewed records that userID has viewed assignmentID.
+// If a row already exists the insert is silently ignored (idempotent).
+func (r *Repository) MarkViewed(userID, assignmentID uint64) error {
+	return dbretry.Do(func() error {
+		return r.db.Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&AssignmentView{UserID: userID, AssignmentID: assignmentID, ViewedAt: time.Now()}).Error
+	})
+}
+
+// FindViewedIDs returns a set of assignment IDs (from the provided ids slice)
+// that userID has already viewed.
+func (r *Repository) FindViewedIDs(userID uint64, ids []uint64) (map[uint64]bool, error) {
+	result := make(map[uint64]bool)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var viewedIDs []uint64
+	err := dbretry.Do(func() error {
+		return r.db.Model(&AssignmentView{}).
+			Where("user_id = ? AND assignment_id IN ?", userID, ids).
+			Pluck("assignment_id", &viewedIDs).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range viewedIDs {
+		result[id] = true
+	}
+	return result, nil
 }
 
 // Delete removes the assignment row with the given id. Returns true if a row

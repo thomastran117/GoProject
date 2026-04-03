@@ -1,47 +1,39 @@
-package announcement
+package lecture
 
 import (
 	"context"
 	"net/http"
 	"strconv"
-	"time"
 
 	"backend/internal/application/middleware"
 	"backend/internal/application/request"
+	"backend/internal/features/auth"
 
 	"github.com/gin-gonic/gin"
 )
 
-type announcementService interface {
-	Create(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, p CreateParams) (*AnnouncementResponse, error)
+type lectureService interface {
+	Create(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, p CreateParams) (*LectureResponse, error)
 	GetByCourse(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, page, pageSize int) (*PagedResult, error)
-	GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AnnouncementResponse, error)
-	Update(ctx context.Context, id, callerUserID uint64, callerRole string, p UpdateParams) (*AnnouncementResponse, error)
+	GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*LectureResponse, error)
+	Update(ctx context.Context, id, callerUserID uint64, callerRole string, p UpdateParams) (*LectureResponse, error)
 	Delete(ctx context.Context, id, callerUserID uint64, callerRole string) error
-	Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error)
+	Search(ctx context.Context, callerUserID uint64, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error)
 }
 
-type createAnnouncementRequest struct {
-	Title       string     `json:"title"        binding:"required,min=1,max=300"`
-	Body        string     `json:"body"         binding:"required,min=1"`
-	Priority    string     `json:"priority"     binding:"omitempty,max=20"`
-	IsPinned    bool       `json:"is_pinned"`
-	PublishedAt *time.Time `json:"published_at"`
-	ExpiresAt   *time.Time `json:"expires_at"`
+type createLectureRequest struct {
+	Title   string `json:"title"   binding:"required,min=1,max=300"`
+	Content string `json:"content" binding:"required,min=1"`
 }
 
-type updateAnnouncementRequest struct {
-	Title       string     `json:"title"        binding:"required,min=1,max=300"`
-	Body        string     `json:"body"         binding:"required,min=1"`
-	Priority    string     `json:"priority"     binding:"omitempty,max=20"`
-	IsPinned    bool       `json:"is_pinned"`
-	PublishedAt *time.Time `json:"published_at"`
-	ExpiresAt   *time.Time `json:"expires_at"`
+type updateLectureRequest struct {
+	Title   string `json:"title"   binding:"required,min=1,max=300"`
+	Content string `json:"content" binding:"required,min=1"`
 }
 
-// Handler holds the HTTP handlers for the announcement resource.
+// Handler holds the HTTP handlers for the lecture resource.
 type Handler struct {
-	service announcementService
+	service lectureService
 }
 
 // NewHandler creates a Handler wired to the given Service.
@@ -49,13 +41,13 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-// handleCreate handles POST /courses/:courseId/announcements.
+// handleCreate handles POST /courses/:courseId/lectures.
 func (h *Handler) handleCreate(c *gin.Context) {
 	courseID, err := parseURLUint64(c, "courseId", "INVALID_COURSE_ID", "Invalid course ID")
 	if err != nil {
 		return
 	}
-	var req createAnnouncementRequest
+	var req createLectureRequest
 	if !request.BindJSON(c, &req) {
 		return
 	}
@@ -67,15 +59,10 @@ func (h *Handler) handleCreate(c *gin.Context) {
 		})
 		return
 	}
-	params := CreateParams{
-		Title:       req.Title,
-		Body:        req.Body,
-		Priority:    req.Priority,
-		IsPinned:    req.IsPinned,
-		PublishedAt: req.PublishedAt,
-		ExpiresAt:   req.ExpiresAt,
-	}
-	result, err := h.service.Create(c.Request.Context(), claims.UserID, claims.Role, courseID, params)
+	result, err := h.service.Create(c.Request.Context(), claims.UserID, claims.Role, courseID, CreateParams{
+		Title:   req.Title,
+		Content: req.Content,
+	})
 	if err != nil {
 		c.Error(err)
 		return
@@ -83,7 +70,7 @@ func (h *Handler) handleCreate(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"success": true, "data": result})
 }
 
-// handleGetByCourse handles GET /courses/:courseId/announcements.
+// handleGetByCourse handles GET /courses/:courseId/lectures.
 func (h *Handler) handleGetByCourse(c *gin.Context) {
 	courseID, err := parseURLUint64(c, "courseId", "INVALID_COURSE_ID", "Invalid course ID")
 	if err != nil {
@@ -106,9 +93,9 @@ func (h *Handler) handleGetByCourse(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result.Data, "pagination": result.Pagination})
 }
 
-// handleGet handles GET /announcements/:id.
+// handleGet handles GET /lectures/:id.
 func (h *Handler) handleGet(c *gin.Context) {
-	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid announcement ID")
+	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid lecture ID")
 	if err != nil {
 		return
 	}
@@ -128,13 +115,13 @@ func (h *Handler) handleGet(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
-// handleUpdate handles PUT /announcements/:id.
+// handleUpdate handles PUT /lectures/:id.
 func (h *Handler) handleUpdate(c *gin.Context) {
-	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid announcement ID")
+	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid lecture ID")
 	if err != nil {
 		return
 	}
-	var req updateAnnouncementRequest
+	var req updateLectureRequest
 	if !request.BindJSON(c, &req) {
 		return
 	}
@@ -146,15 +133,10 @@ func (h *Handler) handleUpdate(c *gin.Context) {
 		})
 		return
 	}
-	params := UpdateParams{
-		Title:       req.Title,
-		Body:        req.Body,
-		Priority:    req.Priority,
-		IsPinned:    req.IsPinned,
-		PublishedAt: req.PublishedAt,
-		ExpiresAt:   req.ExpiresAt,
-	}
-	result, err := h.service.Update(c.Request.Context(), id, claims.UserID, claims.Role, params)
+	result, err := h.service.Update(c.Request.Context(), id, claims.UserID, claims.Role, UpdateParams{
+		Title:   req.Title,
+		Content: req.Content,
+	})
 	if err != nil {
 		c.Error(err)
 		return
@@ -162,9 +144,9 @@ func (h *Handler) handleUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
-// handleDelete handles DELETE /announcements/:id.
+// handleDelete handles DELETE /lectures/:id.
 func (h *Handler) handleDelete(c *gin.Context) {
-	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid announcement ID")
+	id, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid lecture ID")
 	if err != nil {
 		return
 	}
@@ -183,7 +165,7 @@ func (h *Handler) handleDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// handleSearch handles GET /announcements (admin only).
+// handleSearch handles GET /lectures (admin only).
 func (h *Handler) handleSearch(c *gin.Context) {
 	claims, ok := middleware.GetClaims(c)
 	if !ok {
@@ -193,10 +175,16 @@ func (h *Handler) handleSearch(c *gin.Context) {
 		})
 		return
 	}
+	if claims.Role != auth.RoleAdmin {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "FORBIDDEN", "message": "Only admins can access the global lectures list"},
+		})
+		return
+	}
 
 	var f SearchFilter
 	f.Title = c.Query("title")
-	f.Priority = c.Query("priority")
 
 	courseID, ok := parseQueryUint64(c, "course_id", "INVALID_COURSE_ID", "Invalid course_id")
 	if !ok {
@@ -211,7 +199,7 @@ func (h *Handler) handleSearch(c *gin.Context) {
 	f.AuthorID = authorID
 
 	page, pageSize := parsePagination(c)
-	result, err := h.service.Search(c.Request.Context(), claims.Role, f, page, pageSize)
+	result, err := h.service.Search(c.Request.Context(), claims.UserID, claims.Role, f, page, pageSize)
 	if err != nil {
 		c.Error(err)
 		return
@@ -253,7 +241,7 @@ func parseQueryUint64(c *gin.Context, param, code, message string) (uint64, bool
 }
 
 // parsePagination reads page and page_size query params, applying defaults of
-// 1 and 20 respectively. Clamping to valid ranges is handled by the service.
+// 1 and 20 respectively.
 func parsePagination(c *gin.Context) (page, pageSize int) {
 	page = 1
 	pageSize = 20

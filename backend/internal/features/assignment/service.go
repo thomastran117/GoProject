@@ -8,6 +8,7 @@ import (
 
 	"backend/internal/application/middleware"
 	"backend/internal/features/auth"
+	"backend/internal/utilities/logger"
 )
 
 // CourseInfo carries the minimal course data needed for ownership checks
@@ -25,22 +26,27 @@ type assignmentRepository interface {
 	Create(a *Assignment) (*Assignment, error)
 	Update(id uint64, fields map[string]any) (*Assignment, error)
 	Delete(id uint64) (bool, error)
+	MarkViewed(userID, assignmentID uint64) error
+	FindViewedIDs(userID uint64, ids []uint64) (map[uint64]bool, error)
 }
 
 // Service implements the business logic for assignments.
 type Service struct {
 	repo       assignmentRepository
 	findCourse func(ctx context.Context, id uint64) (*CourseInfo, error)
+	isEnrolled func(ctx context.Context, courseID, userID uint64) (bool, error)
 }
 
 // NewService creates a Service wired to the given repository and course lookup
 // function. findCourse is injected to avoid a circular import with the course
 // package; it should return nil, nil when the course does not exist.
+// isEnrolled is injected to avoid a circular import with the enrollment package.
 func NewService(
 	repo *Repository,
 	findCourse func(ctx context.Context, id uint64) (*CourseInfo, error),
+	isEnrolled func(ctx context.Context, courseID, userID uint64) (bool, error),
 ) *Service {
-	return &Service{repo: repo, findCourse: findCourse}
+	return &Service{repo: repo, findCourse: findCourse, isEnrolled: isEnrolled}
 }
 
 // --- DTOs ---
@@ -58,6 +64,7 @@ type AssignmentResponse struct {
 	Status      string     `json:"status"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	IsViewed    bool       `json:"is_viewed"`
 }
 
 // PaginationMeta holds the pagination metadata included in list responses.
@@ -142,7 +149,7 @@ func buildPaginationMeta(page, pageSize int, total int64) PaginationMeta {
 	}
 }
 
-func toResponse(a *Assignment) *AssignmentResponse {
+func toResponse(a *Assignment, isViewed bool) *AssignmentResponse {
 	return &AssignmentResponse{
 		ID:          a.ID,
 		CourseID:    a.CourseID,
@@ -154,16 +161,10 @@ func toResponse(a *Assignment) *AssignmentResponse {
 		Status:      a.Status,
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
+		IsViewed:    isViewed,
 	}
 }
 
-func toResponses(rows []*Assignment) []*AssignmentResponse {
-	out := make([]*AssignmentResponse, len(rows))
-	for i, a := range rows {
-		out[i] = toResponse(a)
-	}
-	return out
-}
 
 // --- Service methods ---
 
@@ -209,26 +210,62 @@ func (s *Service) Create(ctx context.Context, callerUserID uint64, callerRole st
 	if err != nil {
 		return nil, err
 	}
-	return toResponse(created), nil
+	return toResponse(created, false), nil
 }
 
 // GetByCourse returns a paginated list of assignments for the given course.
-// Any authenticated user may call this.
-func (s *Service) GetByCourse(ctx context.Context, courseID uint64, page, pageSize int) (*PagedResult, error) {
+// The caller must be enrolled in the course, the course teacher, or an admin.
+func (s *Service) GetByCourse(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64, page, pageSize int) (*PagedResult, error) {
+	course, err := s.findCourse(ctx, courseID)
+	if err != nil {
+		return nil, err
+	}
+	if course == nil {
+		return nil, &middleware.APIError{
+			Status:  http.StatusNotFound,
+			Code:    "COURSE_NOT_FOUND",
+			Message: "Course not found",
+		}
+	}
+	if callerRole != auth.RoleAdmin && course.TeacherID != callerUserID {
+		enrolled, err := s.isEnrolled(ctx, courseID, callerUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !enrolled {
+			return nil, &middleware.APIError{
+				Status:  http.StatusForbidden,
+				Code:    "FORBIDDEN",
+				Message: "You must be enrolled in this course to view its assignments",
+			}
+		}
+	}
 	page, pageSize = clampPage(page, pageSize)
 	rows, total, err := s.repo.FindByCourse(courseID, Page{Number: page, Size: pageSize})
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uint64, len(rows))
+	for i, a := range rows {
+		ids[i] = a.ID
+	}
+	viewedSet, err := s.repo.FindViewedIDs(callerUserID, ids)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]*AssignmentResponse, len(rows))
+	for i, a := range rows {
+		data[i] = toResponse(a, viewedSet[a.ID])
+	}
 	return &PagedResult{
-		Data:       toResponses(rows),
+		Data:       data,
 		Pagination: buildPaginationMeta(page, pageSize, total),
 	}, nil
 }
 
-// GetByID returns the assignment with the given ID. Any authenticated user may
-// call this.
-func (s *Service) GetByID(ctx context.Context, id uint64) (*AssignmentResponse, error) {
+// GetByID returns the assignment with the given ID.
+// The caller must be enrolled in the assignment's course, the course teacher, or an admin.
+func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AssignmentResponse, error) {
 	a, err := s.repo.FindByID(id)
 	if err != nil {
 		return nil, err
@@ -240,7 +277,29 @@ func (s *Service) GetByID(ctx context.Context, id uint64) (*AssignmentResponse, 
 			Message: "Assignment not found",
 		}
 	}
-	return toResponse(a), nil
+	if callerRole != auth.RoleAdmin {
+		course, err := s.findCourse(ctx, a.CourseID)
+		if err != nil {
+			return nil, err
+		}
+		if course == nil || course.TeacherID != callerUserID {
+			enrolled, err := s.isEnrolled(ctx, a.CourseID, callerUserID)
+			if err != nil {
+				return nil, err
+			}
+			if !enrolled {
+				return nil, &middleware.APIError{
+					Status:  http.StatusForbidden,
+					Code:    "FORBIDDEN",
+					Message: "You must be enrolled in this course to view its assignments",
+				}
+			}
+		}
+	}
+	if err := s.repo.MarkViewed(callerUserID, a.ID); err != nil {
+		logger.Warn("assignment: failed to record view for user %d assignment %d: %v", callerUserID, a.ID, err)
+	}
+	return toResponse(a, true), nil
 }
 
 // Update modifies an existing assignment. The caller must be the original
@@ -288,7 +347,7 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 			Message: "Assignment not found",
 		}
 	}
-	return toResponse(updated), nil
+	return toResponse(updated, false), nil
 }
 
 // Delete removes an assignment. The caller must be the original author or an admin.
@@ -317,7 +376,7 @@ func (s *Service) Delete(ctx context.Context, id, callerUserID uint64, callerRol
 
 // Search returns a paginated, filterable list of all assignments across all
 // courses. Restricted to admins.
-func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
+func (s *Service) Search(ctx context.Context, callerUserID uint64, callerRole string, f SearchFilter, page, pageSize int) (*PagedResult, error) {
 	if callerRole != auth.RoleAdmin {
 		return nil, &middleware.APIError{
 			Status:  http.StatusForbidden,
@@ -330,8 +389,20 @@ func (s *Service) Search(ctx context.Context, callerRole string, f SearchFilter,
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]uint64, len(rows))
+	for i, a := range rows {
+		ids[i] = a.ID
+	}
+	viewedSet, err := s.repo.FindViewedIDs(callerUserID, ids)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]*AssignmentResponse, len(rows))
+	for i, a := range rows {
+		data[i] = toResponse(a, viewedSet[a.ID])
+	}
 	return &PagedResult{
-		Data:       toResponses(rows),
+		Data:       data,
 		Pagination: buildPaginationMeta(page, pageSize, total),
 	}, nil
 }
