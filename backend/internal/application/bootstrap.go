@@ -223,21 +223,21 @@ func MountRoutes() *gin.Engine {
 		return &grade.ItemInfo{CourseID: a.CourseID}, nil
 	}
 	findQuizForGradeFn := func(ctx context.Context, id uint64) (*grade.ItemInfo, error) {
-		q, err := quizRepo.FindByID(id)
+		q, err := quizRepo.FindByID(ctx, id)
 		if err != nil || q == nil {
 			return nil, err
 		}
 		return &grade.ItemInfo{CourseID: q.CourseID}, nil
 	}
 	findTestForGradeFn := func(ctx context.Context, id uint64) (*grade.ItemInfo, error) {
-		t, err := testRepo.FindByID(id)
+		t, err := testRepo.FindByID(ctx, id)
 		if err != nil || t == nil {
 			return nil, err
 		}
 		return &grade.ItemInfo{CourseID: t.CourseID}, nil
 	}
 	findExamForGradeFn := func(ctx context.Context, id uint64) (*grade.ItemInfo, error) {
-		e, err := examRepo.FindByID(id)
+		e, err := examRepo.FindByID(ctx, id)
 		if err != nil || e == nil {
 			return nil, err
 		}

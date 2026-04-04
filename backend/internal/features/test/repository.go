@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -30,10 +31,10 @@ func NewRepository(db *gorm.DB) *Repository {
 }
 
 // FindByID returns the test with the given primary key, or nil if no row exists.
-func (r *Repository) FindByID(id uint64) (*Test, error) {
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*Test, error) {
 	var t Test
 	err := dbretry.Do(func() error {
-		return r.db.First(&t, id).Error
+		return r.db.WithContext(ctx).First(&t, id).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

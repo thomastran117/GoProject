@@ -23,12 +23,12 @@ type ItemInfo struct {
 
 // gradeRepository is the interface the Service depends on for data access.
 type gradeRepository interface {
-	Create(g *Grade) (*Grade, error)
-	FindByID(id uint64) (*Grade, error)
-	FindByCourse(courseID uint64) ([]*Grade, error)
-	FindByCourseAndStudent(courseID, studentID uint64) ([]*Grade, error)
-	Update(id uint64, fields map[string]any) (*Grade, error)
-	Delete(id uint64) (bool, error)
+	Create(ctx context.Context, g *Grade) (*Grade, error)
+	FindByID(ctx context.Context, id uint64) (*Grade, error)
+	FindByCourse(ctx context.Context, courseID uint64) ([]*Grade, error)
+	FindByCourseAndStudent(ctx context.Context, courseID, studentID uint64) ([]*Grade, error)
+	Update(ctx context.Context, id uint64, fields map[string]any) (*Grade, error)
+	Delete(ctx context.Context, id uint64) (bool, error)
 }
 
 // Service implements the business logic for grades.
@@ -181,6 +181,24 @@ func computeFinalGrade(grades []*Grade) *float64 {
 	return &v
 }
 
+// computeFinalGradeFromResponses computes the final grade directly from a
+// slice of GradeResponse DTOs, avoiding reconstruction of Grade objects.
+func computeFinalGradeFromResponses(grades []*GradeResponse) *float64 {
+	if len(grades) == 0 {
+		return nil
+	}
+	var sumScore, sumMax float64
+	for _, g := range grades {
+		sumScore += g.Score
+		sumMax += g.MaxScore
+	}
+	if sumMax == 0 {
+		return nil
+	}
+	v := (sumScore / sumMax) * 100
+	return &v
+}
+
 // groupByStudent groups a flat []*Grade slice into []*StudentGradesResponse,
 // preserving the student_id ASC, created_at ASC order returned by the repository.
 func groupByStudent(grades []*Grade) []*StudentGradesResponse {
@@ -200,13 +218,8 @@ func groupByStudent(grades []*Grade) []*StudentGradesResponse {
 		result[i].Grades = append(result[i].Grades, toResponse(g))
 	}
 
-	// Compute final grade per student.
 	for _, sg := range result {
-		raw := make([]*Grade, len(sg.Grades))
-		for j, gr := range sg.Grades {
-			raw[j] = &Grade{Score: gr.Score, MaxScore: gr.MaxScore}
-		}
-		sg.FinalGrade = computeFinalGrade(raw)
+		sg.FinalGrade = computeFinalGradeFromResponses(sg.Grades)
 	}
 	return result
 }
@@ -249,7 +262,7 @@ func countFKs(p *CreateGradeParams) int {
 }
 
 // resolveReference looks up the referenced item and verifies it belongs to
-// courseID. Returns the item type string for use in error messages.
+// courseID. Called only after countFKs confirms exactly one FK is set.
 func (s *Service) resolveReference(ctx context.Context, courseID uint64, p *CreateGradeParams) error {
 	var item *ItemInfo
 	var err error
@@ -263,6 +276,13 @@ func (s *Service) resolveReference(ctx context.Context, courseID uint64, p *Crea
 		item, err = s.findTest(ctx, *p.TestID)
 	case p.ExamID != nil:
 		item, err = s.findExam(ctx, *p.ExamID)
+	default:
+		// Unreachable: countFKs == 1 is enforced before this call.
+		return &middleware.APIError{
+			Status:  http.StatusInternalServerError,
+			Code:    "INTERNAL_ERROR",
+			Message: "No reference ID provided",
+		}
 	}
 
 	if err != nil {
@@ -336,7 +356,7 @@ func (s *Service) CreateGrade(ctx context.Context, callerUserID uint64, callerRo
 		Score:        p.Score,
 		MaxScore:     p.MaxScore,
 	}
-	created, err := s.repo.Create(g)
+	created, err := s.repo.Create(ctx, g)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +379,7 @@ func (s *Service) ListAll(ctx context.Context, callerUserID uint64, callerRole s
 		}
 	}
 
-	rows, err := s.repo.FindByCourse(courseID)
+	rows, err := s.repo.FindByCourse(ctx, courseID)
 	if err != nil {
 		return nil, err
 	}
@@ -370,16 +390,15 @@ func (s *Service) ListAll(ctx context.Context, callerUserID uint64, callerRole s
 // computed final_grade. Students must be actively enrolled; teachers and
 // admins bypass this check.
 func (s *Service) GetMine(ctx context.Context, callerUserID uint64, callerRole string, courseID uint64) (*MyGradesResponse, error) {
-	if _, err := s.resolveCourse(ctx, courseID); err != nil {
+	// resolveCourse guarantees a non-nil CourseInfo on success; reuse it for
+	// the teacher-ownership check to avoid a redundant findCourse call.
+	course, err := s.resolveCourse(ctx, courseID)
+	if err != nil {
 		return nil, err
 	}
 
 	if callerRole != auth.RoleAdmin {
-		course, err := s.findCourse(ctx, courseID)
-		if err != nil {
-			return nil, err
-		}
-		if callerRole != auth.RoleTeacher || course == nil || course.TeacherID != callerUserID {
+		if callerRole != auth.RoleTeacher || course.TeacherID != callerUserID {
 			enrolled, err := s.isEnrolled(ctx, courseID, callerUserID)
 			if err != nil {
 				return nil, err
@@ -394,7 +413,7 @@ func (s *Service) GetMine(ctx context.Context, callerUserID uint64, callerRole s
 		}
 	}
 
-	rows, err := s.repo.FindByCourseAndStudent(courseID, callerUserID)
+	rows, err := s.repo.FindByCourseAndStudent(ctx, courseID, callerUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +443,7 @@ func (s *Service) UpdateGrade(ctx context.Context, callerUserID uint64, callerRo
 		}
 	}
 
-	existing, err := s.repo.FindByID(gradeID)
+	existing, err := s.repo.FindByID(ctx, gradeID)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +455,7 @@ func (s *Service) UpdateGrade(ctx context.Context, callerUserID uint64, callerRo
 		}
 	}
 
-	// Merge incoming fields onto the existing values.
+	// Merge incoming fields onto existing values before validating.
 	mergedScore := existing.Score
 	mergedMax := existing.MaxScore
 	if p.Score != nil {
@@ -461,7 +480,7 @@ func (s *Service) UpdateGrade(ctx context.Context, callerUserID uint64, callerRo
 		fields["title"] = *p.Title
 	}
 
-	updated, err := s.repo.Update(gradeID, fields)
+	updated, err := s.repo.Update(ctx, gradeID, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -490,7 +509,7 @@ func (s *Service) DeleteGrade(ctx context.Context, callerUserID uint64, callerRo
 		}
 	}
 
-	existing, err := s.repo.FindByID(gradeID)
+	existing, err := s.repo.FindByID(ctx, gradeID)
 	if err != nil {
 		return err
 	}
@@ -502,6 +521,6 @@ func (s *Service) DeleteGrade(ctx context.Context, callerUserID uint64, callerRo
 		}
 	}
 
-	_, err = s.repo.Delete(gradeID)
+	_, err = s.repo.Delete(ctx, gradeID)
 	return err
 }

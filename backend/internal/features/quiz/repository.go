@@ -1,6 +1,7 @@
 package quiz
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -30,10 +31,10 @@ func NewRepository(db *gorm.DB) *Repository {
 }
 
 // FindByID returns the quiz with the given primary key, or nil if no row exists.
-func (r *Repository) FindByID(id uint64) (*Quiz, error) {
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*Quiz, error) {
 	var q Quiz
 	err := dbretry.Do(func() error {
-		return r.db.First(&q, id).Error
+		return r.db.WithContext(ctx).First(&q, id).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

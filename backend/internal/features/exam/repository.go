@@ -1,6 +1,7 @@
 package exam
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -30,10 +31,10 @@ func NewRepository(db *gorm.DB) *Repository {
 }
 
 // FindByID returns the exam with the given primary key, or nil if no row exists.
-func (r *Repository) FindByID(id uint64) (*Exam, error) {
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*Exam, error) {
 	var e Exam
 	err := dbretry.Do(func() error {
-		return r.db.First(&e, id).Error
+		return r.db.WithContext(ctx).First(&e, id).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

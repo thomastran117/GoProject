@@ -1,6 +1,7 @@
 package grade
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -41,9 +42,9 @@ func NewRepository(db *gorm.DB) *Repository {
 
 // Create inserts a new grade row and returns the persisted record with its
 // generated ID and timestamps populated.
-func (r *Repository) Create(g *Grade) (*Grade, error) {
+func (r *Repository) Create(ctx context.Context, g *Grade) (*Grade, error) {
 	err := dbretry.Do(func() error {
-		return r.db.Create(g).Error
+		return r.db.WithContext(ctx).Create(g).Error
 	})
 	if err != nil {
 		return nil, err
@@ -52,10 +53,10 @@ func (r *Repository) Create(g *Grade) (*Grade, error) {
 }
 
 // FindByID returns the grade with the given primary key, or nil if no row exists.
-func (r *Repository) FindByID(id uint64) (*Grade, error) {
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*Grade, error) {
 	var g Grade
 	err := dbretry.Do(func() error {
-		return r.db.First(&g, id).Error
+		return r.db.WithContext(ctx).First(&g, id).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -68,10 +69,10 @@ func (r *Repository) FindByID(id uint64) (*Grade, error) {
 
 // FindByCourse returns all grades for the given course ordered by student_id
 // ascending, then created_at ascending.
-func (r *Repository) FindByCourse(courseID uint64) ([]*Grade, error) {
+func (r *Repository) FindByCourse(ctx context.Context, courseID uint64) ([]*Grade, error) {
 	var grades []*Grade
 	err := dbretry.Do(func() error {
-		return r.db.Where("course_id = ?", courseID).
+		return r.db.WithContext(ctx).Where("course_id = ?", courseID).
 			Order("student_id ASC, created_at ASC").
 			Find(&grades).Error
 	})
@@ -83,10 +84,10 @@ func (r *Repository) FindByCourse(courseID uint64) ([]*Grade, error) {
 
 // FindByCourseAndStudent returns all grades for a specific student in a course
 // ordered by created_at ascending.
-func (r *Repository) FindByCourseAndStudent(courseID, studentID uint64) ([]*Grade, error) {
+func (r *Repository) FindByCourseAndStudent(ctx context.Context, courseID, studentID uint64) ([]*Grade, error) {
 	var grades []*Grade
 	err := dbretry.Do(func() error {
-		return r.db.Where("course_id = ? AND student_id = ?", courseID, studentID).
+		return r.db.WithContext(ctx).Where("course_id = ? AND student_id = ?", courseID, studentID).
 			Order("created_at ASC").
 			Find(&grades).Error
 	})
@@ -98,10 +99,10 @@ func (r *Repository) FindByCourseAndStudent(courseID, studentID uint64) ([]*Grad
 
 // Update overwrites mutable fields of the grade identified by id inside a
 // SELECT FOR UPDATE transaction. Returns nil, nil when no matching row exists.
-func (r *Repository) Update(id uint64, fields map[string]any) (*Grade, error) {
+func (r *Repository) Update(ctx context.Context, id uint64, fields map[string]any) (*Grade, error) {
 	var g Grade
 	err := dbretry.Do(func() error {
-		return r.db.Transaction(func(tx *gorm.DB) error {
+		return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, id).Error; err != nil {
 				return err
 			}
@@ -114,15 +115,15 @@ func (r *Repository) Update(id uint64, fields map[string]any) (*Grade, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.FindByID(id)
+	return r.FindByID(ctx, id)
 }
 
 // Delete removes the grade row with the given id. Returns true if a row was
 // deleted, false if no matching row existed.
-func (r *Repository) Delete(id uint64) (bool, error) {
+func (r *Repository) Delete(ctx context.Context, id uint64) (bool, error) {
 	var rowsAffected int64
 	err := dbretry.Do(func() error {
-		result := r.db.Delete(&Grade{}, id)
+		result := r.db.WithContext(ctx).Delete(&Grade{}, id)
 		if result.Error != nil {
 			return result.Error
 		}
