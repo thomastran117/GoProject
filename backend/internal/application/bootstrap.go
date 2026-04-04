@@ -21,6 +21,7 @@ import (
 	"backend/internal/features/lecture"
 	"backend/internal/features/profile"
 	"backend/internal/features/school"
+	"backend/internal/features/submission"
 	"backend/internal/features/token"
 
 	"log"
@@ -67,6 +68,7 @@ func MountRoutes() *gin.Engine {
 		&enrollment.Enrollment{},
 		&lecture.Lecture{},
 		&lecture.LectureView{},
+		&submission.AssignmentSubmission{},
 	); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
 	}
@@ -168,6 +170,32 @@ func MountRoutes() *gin.Engine {
 	assignmentService := assignment.NewService(assignmentRepo, findCourseForAssignmentFn, isEnrolledFn)
 	assignmentHandler := assignment.NewHandler(assignmentService)
 
+	findAssignmentForSubmissionFn := func(ctx context.Context, id uint64) (*submission.AssignmentInfo, error) {
+		a, err := assignmentRepo.FindByID(id)
+		if err != nil || a == nil {
+			return nil, err
+		}
+		return &submission.AssignmentInfo{
+			CourseID: a.CourseID,
+			AuthorID: a.AuthorID,
+			DueAt:    a.DueAt,
+			Points:   a.Points,
+			Status:   a.Status,
+		}, nil
+	}
+
+	findCourseForSubmissionFn := func(ctx context.Context, id uint64) (*submission.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &submission.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+
+	submissionRepo := submission.NewRepository(database.DB)
+	submissionService := submission.NewService(submissionRepo, findAssignmentForSubmissionFn, findCourseForSubmissionFn, isEnrolledFn)
+	submissionHandler := submission.NewHandler(submissionService)
+
 	findCourseForLectureFn := func(ctx context.Context, id uint64) (*lecture.CourseInfo, error) {
 		c, err := courseRepo.FindByID(id)
 		if err != nil || c == nil {
@@ -200,6 +228,7 @@ func MountRoutes() *gin.Engine {
 	course.MountCourseRoutes(api, courseHandler)
 	announcement.MountAnnouncementRoutes(api, announcementHandler)
 	assignment.MountAssignmentRoutes(api, assignmentHandler)
+	submission.MountSubmissionRoutes(api, submissionHandler)
 	lecture.MountLectureRoutes(api, lectureHandler)
 	enrollment.MountEnrollmentRoutes(api, enrollmentHandler)
 
