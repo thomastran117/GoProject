@@ -7,6 +7,7 @@ import (
 
 	"backend/internal/application/middleware"
 	"backend/internal/application/request"
+	"backend/internal/features/token"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,20 +21,27 @@ type gradeService interface {
 }
 
 type createGradeRequest struct {
-	StudentID    uint64   `json:"student_id"    binding:"required"`
-	AssignmentID *uint64  `json:"assignment_id"`
-	QuizID       *uint64  `json:"quiz_id"`
-	TestID       *uint64  `json:"test_id"`
-	ExamID       *uint64  `json:"exam_id"`
-	Title        string   `json:"title"         binding:"required,min=1,max=300"`
-	Score        float64  `json:"score"         binding:"min=0"`
-	MaxScore     float64  `json:"max_score"     binding:"omitempty,min=0"`
+	StudentID    uint64  `json:"student_id"    binding:"required"`
+	AssignmentID *uint64 `json:"assignment_id"`
+	QuizID       *uint64 `json:"quiz_id"`
+	TestID       *uint64 `json:"test_id"`
+	ExamID       *uint64 `json:"exam_id"`
+	Title        string  `json:"title"         binding:"required,min=1,max=300"`
+	Score        float64 `json:"score"         binding:"min=0"`
+	MaxScore     float64 `json:"max_score"     binding:"omitempty,min=0"`
 }
 
 type updateGradeRequest struct {
 	Title    *string  `json:"title"     binding:"omitempty,min=1,max=300"`
 	Score    *float64 `json:"score"     binding:"omitempty,min=0"`
 	MaxScore *float64 `json:"max_score" binding:"omitempty,min=0"`
+
+	// FK fields are present only to detect and reject mutation attempts.
+	// They must not appear in the service params.
+	AssignmentID *uint64 `json:"assignment_id"`
+	QuizID       *uint64 `json:"quiz_id"`
+	TestID       *uint64 `json:"test_id"`
+	ExamID       *uint64 `json:"exam_id"`
 }
 
 // Handler holds the HTTP handlers for the grade resource.
@@ -46,6 +54,19 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+// getClaims extracts JWT claims from the context, writing a 401 response and
+// returning false when the claims are absent.
+func getClaims(c *gin.Context) (*token.AccessClaims, bool) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
+		})
+	}
+	return claims, ok
+}
+
 // handleCreate handles POST /courses/:id/grades.
 func (h *Handler) handleCreate(c *gin.Context) {
 	courseID, err := parseURLUint64(c, "id", "INVALID_ID", "Invalid course ID")
@@ -56,12 +77,8 @@ func (h *Handler) handleCreate(c *gin.Context) {
 	if !request.BindJSON(c, &req) {
 		return
 	}
-	claims, ok := middleware.GetClaims(c)
+	claims, ok := getClaims(c)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
-		})
 		return
 	}
 	result, err := h.service.CreateGrade(c.Request.Context(), claims.UserID, claims.Role, courseID, CreateGradeParams{
@@ -87,12 +104,8 @@ func (h *Handler) handleListAll(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	claims, ok := middleware.GetClaims(c)
+	claims, ok := getClaims(c)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
-		})
 		return
 	}
 	result, err := h.service.ListAll(c.Request.Context(), claims.UserID, claims.Role, courseID)
@@ -109,12 +122,8 @@ func (h *Handler) handleGetMine(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	claims, ok := middleware.GetClaims(c)
+	claims, ok := getClaims(c)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
-		})
 		return
 	}
 	result, err := h.service.GetMine(c.Request.Context(), claims.UserID, claims.Role, courseID)
@@ -139,12 +148,15 @@ func (h *Handler) handleUpdate(c *gin.Context) {
 	if !request.BindJSON(c, &req) {
 		return
 	}
-	claims, ok := middleware.GetClaims(c)
-	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+	if req.AssignmentID != nil || req.QuizID != nil || req.TestID != nil || req.ExamID != nil {
+		c.AbortWithStatusJSON(http.StatusUnprocessableEntity, gin.H{
 			"success": false,
-			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
+			"error":   gin.H{"code": "IMMUTABLE_FIELD", "message": "FK reference fields cannot be changed after creation"},
 		})
+		return
+	}
+	claims, ok := getClaims(c)
+	if !ok {
 		return
 	}
 	result, err := h.service.UpdateGrade(c.Request.Context(), claims.UserID, claims.Role, courseID, gradeID, UpdateGradeParams{
@@ -169,12 +181,8 @@ func (h *Handler) handleDelete(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	claims, ok := middleware.GetClaims(c)
+	claims, ok := getClaims(c)
 	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   gin.H{"code": "UNAUTHORIZED", "message": "Unauthorized"},
-		})
 		return
 	}
 	if err := h.service.DeleteGrade(c.Request.Context(), claims.UserID, claims.Role, courseID, gradeID); err != nil {

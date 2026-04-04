@@ -20,7 +20,7 @@ type CourseInfo struct {
 // assignmentRepository is the interface the Service depends on for data
 // access, allowing the service to be tested without a real database.
 type assignmentRepository interface {
-	FindByID(id uint64) (*Assignment, error)
+	FindByID(ctx context.Context, id uint64) (*Assignment, error)
 	FindByCourse(courseID uint64, p Page) ([]*Assignment, int64, error)
 	Search(f SearchFilter, p Page) ([]*Assignment, int64, error)
 	Create(a *Assignment) (*Assignment, error)
@@ -266,7 +266,7 @@ func (s *Service) GetByCourse(ctx context.Context, callerUserID uint64, callerRo
 // GetByID returns the assignment with the given ID.
 // The caller must be enrolled in the assignment's course, the course teacher, or an admin.
 func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole string, id uint64) (*AssignmentResponse, error) {
-	a, err := s.repo.FindByID(id)
+	a, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +305,7 @@ func (s *Service) GetByID(ctx context.Context, callerUserID uint64, callerRole s
 // Update modifies an existing assignment. The caller must be the original
 // author or an admin.
 func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRole string, p UpdateParams) (*AssignmentResponse, error) {
-	existing, err := s.repo.FindByID(id)
+	existing, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +352,7 @@ func (s *Service) Update(ctx context.Context, id, callerUserID uint64, callerRol
 
 // Delete removes an assignment. The caller must be the original author or an admin.
 func (s *Service) Delete(ctx context.Context, id, callerUserID uint64, callerRole string) error {
-	existing, err := s.repo.FindByID(id)
+	existing, err := s.repo.FindByID(ctx, id)
 	if err != nil {
 		return err
 	}

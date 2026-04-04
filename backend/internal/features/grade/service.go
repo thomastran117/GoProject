@@ -3,6 +3,7 @@ package grade
 import (
 	"context"
 	"net/http"
+	"sort"
 	"time"
 
 	"backend/internal/application/middleware"
@@ -163,17 +164,9 @@ func toResponse(g *Grade) *GradeResponse {
 	}
 }
 
-// computeFinalGrade returns sum(score)/sum(max_score)*100, or nil when the
-// slice is empty or the total max score is zero.
-func computeFinalGrade(grades []*Grade) *float64 {
-	if len(grades) == 0 {
-		return nil
-	}
-	var sumScore, sumMax float64
-	for _, g := range grades {
-		sumScore += g.Score
-		sumMax += g.MaxScore
-	}
+// finalGrade computes sum(score)/sum(max_score)*100 from pre-summed values.
+// Returns nil when sumMax is zero (no grades or all max scores are zero).
+func finalGrade(sumScore, sumMax float64) *float64 {
 	if sumMax == 0 {
 		return nil
 	}
@@ -181,22 +174,25 @@ func computeFinalGrade(grades []*Grade) *float64 {
 	return &v
 }
 
-// computeFinalGradeFromResponses computes the final grade directly from a
-// slice of GradeResponse DTOs, avoiding reconstruction of Grade objects.
-func computeFinalGradeFromResponses(grades []*GradeResponse) *float64 {
-	if len(grades) == 0 {
-		return nil
-	}
+// computeFinalGrade returns the final grade percentage for a []*Grade slice.
+func computeFinalGrade(grades []*Grade) *float64 {
 	var sumScore, sumMax float64
 	for _, g := range grades {
 		sumScore += g.Score
 		sumMax += g.MaxScore
 	}
-	if sumMax == 0 {
-		return nil
+	return finalGrade(sumScore, sumMax)
+}
+
+// computeFinalGradeFromResponses returns the final grade percentage for a
+// []*GradeResponse slice, avoiding reconstruction of Grade objects.
+func computeFinalGradeFromResponses(grades []*GradeResponse) *float64 {
+	var sumScore, sumMax float64
+	for _, g := range grades {
+		sumScore += g.Score
+		sumMax += g.MaxScore
 	}
-	v := (sumScore / sumMax) * 100
-	return &v
+	return finalGrade(sumScore, sumMax)
 }
 
 // groupByStudent groups a flat []*Grade slice into []*StudentGradesResponse,
@@ -221,6 +217,12 @@ func groupByStudent(grades []*Grade) []*StudentGradesResponse {
 	for _, sg := range result {
 		sg.FinalGrade = computeFinalGradeFromResponses(sg.Grades)
 	}
+
+	// Sort by StudentID so the output order is deterministic regardless of any
+	// future change to the upstream query ordering.
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].StudentID < result[j].StudentID
+	})
 	return result
 }
 

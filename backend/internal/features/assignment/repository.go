@@ -1,6 +1,7 @@
 package assignment
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -63,10 +64,10 @@ type SearchFilter struct {
 
 // FindByID returns the assignment with the given primary key, or nil if no row
 // exists.
-func (r *Repository) FindByID(id uint64) (*Assignment, error) {
+func (r *Repository) FindByID(ctx context.Context, id uint64) (*Assignment, error) {
 	var a Assignment
 	err := dbretry.Do(func() error {
-		return r.db.First(&a, id).Error
+		return r.db.WithContext(ctx).First(&a, id).Error
 	})
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -162,7 +163,7 @@ func (r *Repository) Update(id uint64, fields map[string]any) (*Assignment, erro
 	if err != nil {
 		return nil, err
 	}
-	return r.FindByID(id)
+	return r.FindByID(context.Background(), id)
 }
 
 // MarkViewed records that userID has viewed assignmentID.

@@ -179,7 +179,7 @@ func MountRoutes() *gin.Engine {
 	assignmentHandler := assignment.NewHandler(assignmentService)
 
 	findAssignmentForSubmissionFn := func(ctx context.Context, id uint64) (*submission.AssignmentInfo, error) {
-		a, err := assignmentRepo.FindByID(id)
+		a, err := assignmentRepo.FindByID(ctx, id)
 		if err != nil || a == nil {
 			return nil, err
 		}
@@ -216,7 +216,7 @@ func MountRoutes() *gin.Engine {
 		return &grade.CourseInfo{TeacherID: c.TeacherID}, nil
 	}
 	findAssignmentForGradeFn := func(ctx context.Context, id uint64) (*grade.ItemInfo, error) {
-		a, err := assignmentRepo.FindByID(id)
+		a, err := assignmentRepo.FindByID(ctx, id)
 		if err != nil || a == nil {
 			return nil, err
 		}
