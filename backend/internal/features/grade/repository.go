@@ -118,6 +118,60 @@ func (r *Repository) Update(ctx context.Context, id uint64, fields map[string]an
 	return r.FindByID(ctx, id)
 }
 
+// FindByQuizAndStudent returns the grade linked to the given quiz for a specific
+// student, or nil if no such row exists.
+func (r *Repository) FindByQuizAndStudent(ctx context.Context, quizID, studentID uint64) (*Grade, error) {
+	var g Grade
+	err := dbretry.Do(func() error {
+		return r.db.WithContext(ctx).
+			Where("quiz_id = ? AND student_id = ?", quizID, studentID).
+			First(&g).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+// FindByTestAndStudent returns the grade linked to the given test for a specific
+// student, or nil if no such row exists.
+func (r *Repository) FindByTestAndStudent(ctx context.Context, testID, studentID uint64) (*Grade, error) {
+	var g Grade
+	err := dbretry.Do(func() error {
+		return r.db.WithContext(ctx).
+			Where("test_id = ? AND student_id = ?", testID, studentID).
+			First(&g).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+// FindByExamAndStudent returns the grade linked to the given exam for a specific
+// student, or nil if no such row exists.
+func (r *Repository) FindByExamAndStudent(ctx context.Context, examID, studentID uint64) (*Grade, error) {
+	var g Grade
+	err := dbretry.Do(func() error {
+		return r.db.WithContext(ctx).
+			Where("exam_id = ? AND student_id = ?", examID, studentID).
+			First(&g).Error
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
 // Delete removes the grade row with the given id. Returns true if a row was
 // deleted, false if no matching row existed.
 func (r *Repository) Delete(ctx context.Context, id uint64) (bool, error) {

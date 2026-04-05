@@ -74,8 +74,20 @@ func MountRoutes() *gin.Engine {
 		&lecture.LectureView{},
 		&submission.AssignmentSubmission{},
 		&quiz.Quiz{},
+		&quiz.QuizQuestion{},
+		&quiz.QuizChoice{},
+		&quiz.QuizSubmission{},
+		&quiz.QuizAnswer{},
 		&test.Test{},
+		&test.TestQuestion{},
+		&test.TestChoice{},
+		&test.TestSubmission{},
+		&test.TestAnswer{},
 		&exam.Exam{},
+		&exam.ExamQuestion{},
+		&exam.ExamChoice{},
+		&exam.ExamSubmission{},
+		&exam.ExamAnswer{},
 		&grade.Grade{},
 	); err != nil {
 		log.Fatal("database: failed to migrate profile:", err)
@@ -249,6 +261,52 @@ func MountRoutes() *gin.Engine {
 		findAssignmentForGradeFn, findQuizForGradeFn, findTestForGradeFn, findExamForGradeFn)
 	gradeHandler := grade.NewHandler(gradeService)
 
+	createGradeFn := func(ctx context.Context, g *grade.Grade) (*grade.Grade, error) {
+		return gradeRepo.Create(ctx, g)
+	}
+	updateGradeFn := func(ctx context.Context, id uint64, fields map[string]any) (*grade.Grade, error) {
+		return gradeRepo.Update(ctx, id, fields)
+	}
+
+	findCourseForQuizFn := func(ctx context.Context, id uint64) (*quiz.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &quiz.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+	findGradeByQuizAndStudentFn := func(ctx context.Context, quizID, studentID uint64) (*grade.Grade, error) {
+		return gradeRepo.FindByQuizAndStudent(ctx, quizID, studentID)
+	}
+	quizService := quiz.NewService(quizRepo, findCourseForQuizFn, isEnrolledFn, createGradeFn, updateGradeFn, findGradeByQuizAndStudentFn)
+	quizHandler := quiz.NewHandler(quizService)
+
+	findCourseForTestFn := func(ctx context.Context, id uint64) (*test.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &test.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+	findGradeByTestAndStudentFn := func(ctx context.Context, testID, studentID uint64) (*grade.Grade, error) {
+		return gradeRepo.FindByTestAndStudent(ctx, testID, studentID)
+	}
+	testService := test.NewService(testRepo, findCourseForTestFn, isEnrolledFn, createGradeFn, updateGradeFn, findGradeByTestAndStudentFn)
+	testHandler := test.NewHandler(testService)
+
+	findCourseForExamFn := func(ctx context.Context, id uint64) (*exam.CourseInfo, error) {
+		c, err := courseRepo.FindByID(id)
+		if err != nil || c == nil {
+			return nil, err
+		}
+		return &exam.CourseInfo{TeacherID: c.TeacherID}, nil
+	}
+	findGradeByExamAndStudentFn := func(ctx context.Context, examID, studentID uint64) (*grade.Grade, error) {
+		return gradeRepo.FindByExamAndStudent(ctx, examID, studentID)
+	}
+	examService := exam.NewService(examRepo, findCourseForExamFn, isEnrolledFn, createGradeFn, updateGradeFn, findGradeByExamAndStudentFn)
+	examHandler := exam.NewHandler(examService)
+
 	findCourseForLectureFn := func(ctx context.Context, id uint64) (*lecture.CourseInfo, error) {
 		c, err := courseRepo.FindByID(id)
 		if err != nil || c == nil {
@@ -285,6 +343,9 @@ func MountRoutes() *gin.Engine {
 	lecture.MountLectureRoutes(api, lectureHandler)
 	enrollment.MountEnrollmentRoutes(api, enrollmentHandler)
 	grade.MountGradeRoutes(api, gradeHandler)
+	quiz.MountQuizRoutes(api, quizHandler)
+	test.MountTestRoutes(api, testHandler)
+	exam.MountExamRoutes(api, examHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
