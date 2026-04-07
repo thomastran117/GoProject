@@ -4,12 +4,14 @@ import (
 	"context"
 
 	"backend/internal/application/middleware"
+	"backend/internal/application/middleware/activity"
 	"backend/internal/application/validators"
 	"backend/internal/config/database"
 	"backend/internal/config/environment"
 	configredis "backend/internal/config/redis"
 	"backend/internal/external/blob"
 	"backend/internal/external/email"
+	"backend/internal/features/activitylog"
 	"backend/internal/features/announcement"
 	"backend/internal/features/assignment"
 	"backend/internal/features/auth"
@@ -62,6 +64,7 @@ func MountRoutes() *gin.Engine {
 	token.Init(env.JWTSecret, cacheService)
 
 	if err := database.DB.AutoMigrate(
+		&activitylog.ActivityLog{},
 		&profile.Profile{},
 		&school.School{},
 		&course.Course{},
@@ -319,6 +322,11 @@ func MountRoutes() *gin.Engine {
 	lectureService := lecture.NewService(lectureRepo, findCourseForLectureFn, isEnrolledFn)
 	lectureHandler := lecture.NewHandler(lectureService)
 
+	activityLogRepo := activitylog.NewRepository(database.DB)
+	activityLogService := activitylog.NewService(activityLogRepo)
+	activityLogHandler := activitylog.NewHandler(activityLogService)
+	activityLogger := middleware_activity.NewActivityLogger(activityLogRepo)
+
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		validators.Register(v)
 	}
@@ -332,6 +340,8 @@ func MountRoutes() *gin.Engine {
 	health.MountHealthRoutes(r.Group("/"))
 
 	api := r.Group("/api")
+	api.Use(activityLogger.Middleware())
+
 	auth.MountAuthRoutes(api, authHandler)
 
 	profile.MountProfileRoutes(api, profileHandler)
@@ -346,6 +356,7 @@ func MountRoutes() *gin.Engine {
 	quiz.MountQuizRoutes(api, quizHandler)
 	test.MountTestRoutes(api, testHandler)
 	exam.MountExamRoutes(api, examHandler)
+	activitylog.Mount(api, activityLogHandler)
 
 	if env.HasAzureBlob() {
 		blobService, err := blob.NewService(env.AzureStorageAccountName, env.AzureStorageAccountKey, env.AzureStorageContainerName)
